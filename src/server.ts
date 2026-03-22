@@ -1,6 +1,6 @@
 import express, { Request, Response } from 'express';
 import cors from 'cors';
-import { analyzeRoute, buildPredictionIndex, generateRecommendations, getDistance } from './analysis';
+import { analyzeRoute, buildPredictionIndex, generateRecommendations, generateCrossRouteRecommendations, getDistance } from './analysis';
 import { Vehicle, VehicleHistory, RouteState, ConflictZone, DispatchRecommendation } from './types';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -233,10 +233,16 @@ async function poll(): Promise<void> {
       systemState[tag].lastUpdated = now;
       totalVehicles += vehicles.length;
 
-      // Generate dispatch recommendations for this route and enrich with loop data
+      // Generate single-route dispatch recommendations and enrich with loop data
       const recs = generateRecommendations(tag, vehicles, POLL_INTERVAL_MS);
       systemRecommendations[tag] = enrichWithLoopData(recs, vehicles, tag);
     }
+
+    // Cross-route recommendations: local/express corridor substitutions.
+    // Runs once after all per-route analysis is complete, using the full system state.
+    const crossRouteRecs = generateCrossRouteRecommendations(systemState);
+    // Store cross-route recs under a dedicated key so they don't collide with per-route recs
+    systemRecommendations['_cross_route'] = crossRouteRecs;
 
     const totalRecs = Object.values(systemRecommendations).reduce((s, r) => s + r.length, 0);
     console.log(
@@ -285,13 +291,20 @@ app.get('/api/anomalies', (_req: Request, res: Response) => {
   res.json({ timestamp: Date.now(), count: anomalies.length, anomalies });
 });
 
-// Recommendations endpoint — actionable dispatch instructions, sorted by severity
+// Recommendations endpoint — actionable dispatch instructions, sorted by severity.
+// Includes both single-route recommendations and cross-route corridor substitutions.
 app.get('/api/recommendations', (_req: Request, res: Response) => {
   const all = Object.values(systemRecommendations).flat();
   // Re-sort across all routes: CRITICAL first
   const order: Record<string, number> = { CRITICAL: 0, HIGH: 1, MEDIUM: 2 };
   all.sort((a, b) => order[a.severity] - order[b.severity]);
-  res.json({ timestamp: Date.now(), count: all.length, recommendations: all });
+  const crossRouteCount = (systemRecommendations['_cross_route'] ?? []).length;
+  res.json({
+    timestamp: Date.now(),
+    count: all.length,
+    crossRouteCount,
+    recommendations: all,
+  });
 });
 
 // Per-route recommendations

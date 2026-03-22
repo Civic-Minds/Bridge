@@ -1,5 +1,5 @@
-import { getDistance, inferDirection, analyzeRoute, generateRecommendations } from '../analysis';
-import { Vehicle, VehicleHistory, PredictionIndex, VehicleWithAnalysis } from '../types';
+import { getDistance, inferDirection, analyzeRoute, generateRecommendations, generateCrossRouteRecommendations } from '../analysis';
+import { Vehicle, VehicleHistory, PredictionIndex, VehicleWithAnalysis, RouteState, CorridorPair } from '../types';
 
 function makeVehicle(overrides: Partial<Vehicle>): Vehicle {
   return {
@@ -261,9 +261,11 @@ function makeAnalyzedVehicle(
   heading: number,
   anomalies: string[] = [],
   gapAhead: number | null = null,
+  lat = 43.6482,
+  lon = -79.3962,
 ): VehicleWithAnalysis {
   return {
-    ...makeVehicle({ id, heading, stopSequence }),
+    ...makeVehicle({ id, heading, stopSequence, lat, lon }),
     analysis: {
       inferredDir: heading < 180 ? '0' : '1',
       gapAhead,
@@ -336,5 +338,138 @@ describe('generateRecommendations', () => {
     const hold = recs.find(r => r.action === 'HOLD')!;
     expect(hold.reason).toContain('v1');
     expect(hold.reason).toContain('v2');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// generateCrossRouteRecommendations
+// ---------------------------------------------------------------------------
+
+function makeRouteState(
+  tag: string,
+  vehicles: VehicleWithAnalysis[],
+): RouteState {
+  return {
+    tag,
+    title: `${tag}-Test`,
+    color: '#fff',
+    stops: [],
+    paths: [],
+    vehicles,
+    metrics: {
+      activeCount: vehicles.length,
+      bunchingPairs: vehicles.filter(v => v.analysis.anomalies.includes('bunching')).length,
+      closingPairs: 0,
+      dwellAnomalies: 0,
+      largeGaps: vehicles.filter(v => v.analysis.anomalies.includes('gap_ahead')).length,
+    },
+    lastUpdated: Date.now(),
+  };
+}
+
+const TEST_PAIR: CorridorPair = {
+  id: 'test_corridor',
+  name: 'Test Corridor',
+  localRouteTag: '54',
+  expressRouteTag: '954',
+  expressSkipRatio: 0.60,
+};
+
+describe('generateCrossRouteRecommendations', () => {
+  it('returns empty when neither route is monitored', () => {
+    const recs = generateCrossRouteRecommendations({}, [TEST_PAIR]);
+    expect(recs).toEqual([]);
+  });
+
+  it('returns empty when only one route of a pair is monitored', () => {
+    const localVehicles = [makeAnalyzedVehicle('v1', 5, 160, ['gap_ahead'], 12)];
+    const state = { '54': makeRouteState('54', localVehicles) };
+    const recs = generateCrossRouteRecommendations(state, [TEST_PAIR]);
+    expect(recs).toEqual([]);
+  });
+
+  it('returns empty when both routes have no vehicles', () => {
+    const state = {
+      '54':  makeRouteState('54',  []),
+      '954': makeRouteState('954', []),
+    };
+    const recs = generateCrossRouteRecommendations(state, [TEST_PAIR]);
+    expect(recs).toEqual([]);
+  });
+
+  it('generates CONVERT_TO_LOCAL when local has large gap and express vehicle is in the gap zone', () => {
+    // Both vehicles on the same block — express vehicle is within 1500m of the local gap vehicle
+    const gapLat = 43.6482, gapLon = -79.3962;
+    const localVehicles = [
+      makeAnalyzedVehicle('local1', 5,  160, ['gap_ahead'], 12, gapLat,         gapLon),
+      makeAnalyzedVehicle('local2', 17, 160, [],            null, gapLat + 0.01, gapLon),
+    ];
+    // Express vehicle is ~100m away from the local gap vehicle — clearly in the gap zone
+    const expressVehicles = [
+      makeAnalyzedVehicle('exp1', 10, 160, [], null, gapLat + 0.0005, gapLon),
+    ];
+    const state = {
+      '54':  makeRouteState('54',  localVehicles),
+      '954': makeRouteState('954', expressVehicles),
+    };
+    const recs = generateCrossRouteRecommendations(state, [TEST_PAIR]);
+    const convert = recs.find(r => r.action === 'CONVERT_TO_LOCAL');
+    expect(convert).toBeDefined();
+    expect(convert!.vehicleId).toBe('exp1');
+    expect(convert!.routeTag).toBe('954');
+    expect(convert!.partnerRouteTag).toBe('54');
+    expect(convert!.reason).toContain('Test Corridor');
+    expect(convert!.reason).toContain('exp1');
+  });
+
+  it('generates CONVERT_TO_EXPRESS when local is bunched and has a gap ahead', () => {
+    const localVehicles = [
+      makeAnalyzedVehicle('local1', 3,  160, ['bunching'],  1),
+      makeAnalyzedVehicle('local2', 4,  160, ['gap_ahead'], 10),
+      makeAnalyzedVehicle('local3', 14, 160, [],            null),
+    ];
+    const expressVehicles = [makeAnalyzedVehicle('exp1', 8, 160, [], null)];
+    const state = {
+      '54':  makeRouteState('54',  localVehicles),
+      '954': makeRouteState('954', expressVehicles),
+    };
+    const recs = generateCrossRouteRecommendations(state, [TEST_PAIR]);
+    const convert = recs.find(r => r.action === 'CONVERT_TO_EXPRESS');
+    expect(convert).toBeDefined();
+    expect(convert!.routeTag).toBe('54');
+    expect(convert!.partnerRouteTag).toBe('954');
+    expect(convert!.reason).toContain('54');
+    expect(convert!.reason).toContain('954');
+  });
+
+  it('does not generate CONVERT_TO_EXPRESS when bunched but no gap ahead', () => {
+    const localVehicles = [
+      makeAnalyzedVehicle('local1', 3, 160, ['bunching'], 1),
+      makeAnalyzedVehicle('local2', 4, 160, [],           null),
+    ];
+    const expressVehicles = [makeAnalyzedVehicle('exp1', 8, 160, [], null)];
+    const state = {
+      '54':  makeRouteState('54',  localVehicles),
+      '954': makeRouteState('954', expressVehicles),
+    };
+    const recs = generateCrossRouteRecommendations(state, [TEST_PAIR]);
+    expect(recs.find(r => r.action === 'CONVERT_TO_EXPRESS')).toBeUndefined();
+  });
+
+  it('does not generate CONVERT_TO_LOCAL when express vehicle is not in the gap zone', () => {
+    // Express vehicle is ~3.3km away from the local gap vehicle (well outside the 1500m radius)
+    const gapLat = 43.6482, gapLon = -79.3962;
+    const localVehicles = [
+      makeAnalyzedVehicle('local1', 5,  160, ['gap_ahead'], 12, gapLat,         gapLon),
+      makeAnalyzedVehicle('local2', 17, 160, [],            null, gapLat + 0.01, gapLon),
+    ];
+    // ~0.03 degrees latitude ≈ 3.3km — well outside 1500m corridor radius
+    const expressVehicles = [makeAnalyzedVehicle('exp1', 30, 160, [], null, gapLat + 0.03, gapLon)];
+    const state = {
+      '54':  makeRouteState('54',  localVehicles),
+      '954': makeRouteState('954', expressVehicles),
+    };
+    const recs = generateCrossRouteRecommendations(state, [TEST_PAIR]);
+    expect(recs.find(r => r.action === 'CONVERT_TO_LOCAL')).toBeUndefined();
   });
 });

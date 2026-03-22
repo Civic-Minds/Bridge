@@ -134,10 +134,13 @@ export function renderRecommendations(recommendations) {
 
 function renderRecCard(rec) {
     const severityClass = rec.severity.toLowerCase(); // 'critical', 'high', 'medium'
+    const isCrossRoute = rec.action === 'CONVERT_TO_LOCAL' || rec.action === 'CONVERT_TO_EXPRESS';
     const actionLabel = {
-        'HOLD': 'HOLD VEHICLE',
-        'RELEASE_EARLY': 'RELEASE EARLY',
-        'SHORT_TURN': 'SHORT TURN',
+        'HOLD':               'HOLD VEHICLE',
+        'RELEASE_EARLY':      'RELEASE EARLY',
+        'SHORT_TURN':         'SHORT TURN',
+        'CONVERT_TO_LOCAL':   'CONVERT → LOCAL',
+        'CONVERT_TO_EXPRESS': 'CONVERT → EXPRESS',
     }[rec.action] ?? rec.action;
 
     const holdStr = rec.holdSeconds
@@ -154,11 +157,21 @@ function renderRecCard(rec) {
 
     const timeStr = new Date(rec.generatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
-    return `<div class="rec-card rec-${severityClass}">
+    // Cross-route cards show both route tags prominently
+    const routeLabel = isCrossRoute && rec.partnerRouteTag
+        ? `Rt ${rec.routeTag} ↔ ${rec.partnerRouteTag}`
+        : `Rt ${rec.routeTag}`;
+
+    const crossRouteBadge = isCrossRoute
+        ? `<span class="rec-cross-badge">CROSS-ROUTE</span>`
+        : '';
+
+    return `<div class="rec-card rec-${severityClass}${isCrossRoute ? ' rec-cross' : ''}">
         <div class="rec-header">
             <span class="rec-action-badge rec-badge-${severityClass}">${actionLabel}</span>
+            ${crossRouteBadge}
             <span class="rec-vehicle">Veh ${rec.vehicleId}</span>
-            <span class="rec-route">Rt ${rec.routeTag}</span>
+            <span class="rec-route">${routeLabel}</span>
             <span class="rec-time">${timeStr}</span>
         </div>
         <div class="rec-reason">${rec.reason}</div>

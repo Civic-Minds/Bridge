@@ -74,12 +74,19 @@ export interface ConflictZone {
 }
 
 // A concrete action the dispatcher should take right now
-export type RecommendationAction = 'HOLD' | 'RELEASE_EARLY' | 'SHORT_TURN';
+export type RecommendationAction =
+  | 'HOLD'
+  | 'RELEASE_EARLY'
+  | 'SHORT_TURN'
+  | 'CONVERT_TO_LOCAL'    // express vehicle serves all local stops through a gap zone
+  | 'CONVERT_TO_EXPRESS'; // local vehicle skips intermediate stops to pull ahead of a bunch
+
 export type RecommendationSeverity = 'CRITICAL' | 'HIGH' | 'MEDIUM';
 
 export interface DispatchRecommendation {
   id: string;                        // unique key: `${routeTag}-${vehicleId}-${action}`
-  routeTag: string;
+  routeTag: string;                  // primary route this recommendation acts on
+  partnerRouteTag?: string;          // for cross-route actions: the other route involved
   vehicleId: string;
   action: RecommendationAction;
   severity: RecommendationSeverity;
@@ -89,4 +96,15 @@ export interface DispatchRecommendation {
   estimatedSecondsToBunch: number | null; // how soon a bunch will occur if no action
   headwayAfterAction: number | null; // predicted headway (in stops) if action taken
   generatedAt: number;               // unix ms
+}
+
+// A local/express corridor pair on the same street
+export interface CorridorPair {
+  id: string;
+  name: string;                // e.g. "Lawrence East"
+  localRouteTag: string;       // e.g. "54"
+  expressRouteTag: string;     // e.g. "954"
+  // Approximate fraction of stops the express skips (0–1).
+  // Used to estimate travel time difference between local and express service.
+  expressSkipRatio: number;
 }

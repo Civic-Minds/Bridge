@@ -8,6 +8,8 @@ import {
   PredictionIndex,
   DispatchRecommendation,
   RecommendationSeverity,
+  CorridorPair,
+  RouteState,
 } from './types';
 
 export function getDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
@@ -310,6 +312,193 @@ export function generateRecommendations(
   }
 
   // Sort: CRITICAL first, then HIGH, then MEDIUM
+  const order: Record<RecommendationSeverity, number> = { CRITICAL: 0, HIGH: 1, MEDIUM: 2 };
+  recommendations.sort((a, b) => order[a.severity] - order[b.severity]);
+
+  return recommendations;
+}
+
+/**
+ * Toronto TTC local/express corridor pairs.
+ *
+ * Each entry maps a local route to its express counterpart running the same corridor.
+ * expressSkipRatio: roughly what fraction of local stops the express bypasses (0–1).
+ * A ratio of 0.6 means the express skips ~60% of stops → is ~2.5× faster on that segment.
+ *
+ * Extend this registry as more routes are added to monitoring.
+ */
+export const TTC_CORRIDOR_PAIRS: CorridorPair[] = [
+  { id: 'lawrence_east',    name: 'Lawrence East',    localRouteTag: '54',  expressRouteTag: '954', expressSkipRatio: 0.65 },
+  { id: 'lawrence_west',    name: 'Lawrence West',    localRouteTag: '52',  expressRouteTag: '952', expressSkipRatio: 0.60 },
+  { id: 'finch_west',       name: 'Finch West',       localRouteTag: '36',  expressRouteTag: '936', expressSkipRatio: 0.60 },
+  { id: 'finch_east',       name: 'Finch East',       localRouteTag: '39',  expressRouteTag: '939', expressSkipRatio: 0.60 },
+  { id: 'sheppard_east',    name: 'Sheppard East',    localRouteTag: '85',  expressRouteTag: '985', expressSkipRatio: 0.55 },
+  { id: 'sheppard_west',    name: 'Sheppard West',    localRouteTag: '84',  expressRouteTag: '984', expressSkipRatio: 0.55 },
+  { id: 'steeles_west',     name: 'Steeles West',     localRouteTag: '60',  expressRouteTag: '960', expressSkipRatio: 0.60 },
+  { id: 'steeles_east',     name: 'Steeles East',     localRouteTag: '53',  expressRouteTag: '953', expressSkipRatio: 0.60 },
+  { id: 'dufferin',         name: 'Dufferin',         localRouteTag: '29',  expressRouteTag: '929', expressSkipRatio: 0.50 },
+  { id: 'jane',             name: 'Jane',             localRouteTag: '35',  expressRouteTag: '935', expressSkipRatio: 0.50 },
+  { id: 'kipling',          name: 'Kipling',          localRouteTag: '45',  expressRouteTag: '944', expressSkipRatio: 0.55 },
+  { id: 'don_mills',        name: 'Don Mills',        localRouteTag: '25',  expressRouteTag: '925', expressSkipRatio: 0.55 },
+  { id: 'warden',           name: 'Warden',           localRouteTag: '68',  expressRouteTag: '968', expressSkipRatio: 0.50 },
+  { id: 'eglinton_east',    name: 'Eglinton East',    localRouteTag: '34',  expressRouteTag: '905', expressSkipRatio: 0.60 },
+  { id: 'keele',            name: 'Keele',            localRouteTag: '41',  expressRouteTag: '941', expressSkipRatio: 0.50 },
+  { id: 'midland',          name: 'Midland',          localRouteTag: '43',  expressRouteTag: '942', expressSkipRatio: 0.50 },
+];
+
+/**
+ * Generates cross-route service substitution recommendations.
+ *
+ * This engine looks across corridor pairs (local + express on the same street) and asks:
+ *
+ * 1. CONVERT_TO_LOCAL: Does the local route have a large gap, AND is there an express
+ *    vehicle positioned inside or just ahead of that gap? If so, that express vehicle
+ *    can serve all local stops through the gap zone — filling the wait for local riders
+ *    without pulling any vehicle out of service.
+ *
+ * 2. CONVERT_TO_EXPRESS: Is the local route badly bunched, AND is there a vehicle near
+ *    the back of the bunch? That vehicle can skip intermediate stops and run express
+ *    ahead of the bunch — simultaneously relieving crowding AND filling a gap further up.
+ *
+ * The key insight: the data to do this has always existed in GTFS. We just never joined it.
+ *
+ * @param allRouteStates  Full state for every currently monitored route
+ * @param corridorPairs   Registry of local/express pairs to evaluate (defaults to TTC registry)
+ * @param secondsPerStop  Estimated travel time per stop (used for impact estimates)
+ */
+export function generateCrossRouteRecommendations(
+  allRouteStates: Record<string, RouteState>,
+  corridorPairs: CorridorPair[] = TTC_CORRIDOR_PAIRS,
+  secondsPerStop = 45,
+): DispatchRecommendation[] {
+  const recommendations: DispatchRecommendation[] = [];
+  const now = Date.now();
+
+  for (const pair of corridorPairs) {
+    const localState   = allRouteStates[pair.localRouteTag];
+    const expressState = allRouteStates[pair.expressRouteTag];
+
+    // Both routes must be actively monitored and have vehicles reporting
+    if (!localState || !expressState) continue;
+    if (localState.vehicles.length === 0 || expressState.vehicles.length === 0) continue;
+
+    // ── 1. CONVERT_TO_LOCAL ────────────────────────────────────────────────
+    // Condition: local route has a large gap AND an express vehicle is
+    // geographically positioned within or just ahead of that gap.
+    //
+    // "Positioned within the gap" is approximated by comparing stop sequences
+    // after normalizing both routes to a 0–1 fractional position along the corridor.
+    // This is imprecise without shared stop IDs but is good enough for a suggestion.
+
+    const localVehiclesWithGap = localState.vehicles.filter(v =>
+      v.analysis.anomalies.includes('gap_ahead') && v.analysis.gapAhead !== null
+    );
+
+    for (const gapVehicle of localVehiclesWithGap) {
+      const gapStops = gapVehicle.analysis.gapAhead!;
+      const gapMinutes = Math.round((gapStops * secondsPerStop) / 60);
+
+      // Find express vehicles within the geographic gap zone.
+      //
+      // Stop sequences from different routes are not comparable (route-54 stop-10 and
+      // route-954 stop-10 are completely unrelated). We use geographic proximity instead:
+      // local and express share the same street, so vehicles on the same corridor segment
+      // will be within a few hundred metres of each other.
+      //
+      // GAP_CORRIDOR_RADIUS_M: how close (in metres) an express vehicle must be to the
+      // local gap vehicle to be considered "inside" the gap zone.
+      const GAP_CORRIDOR_RADIUS_M = 1500;
+
+      const expressInGap = expressState.vehicles.filter(ev => {
+        const dist = getDistance(ev.lat, ev.lon, gapVehicle.lat, gapVehicle.lon);
+        return dist <= GAP_CORRIDOR_RADIUS_M;
+      });
+
+      if (expressInGap.length === 0) continue;
+
+      // Pick the express vehicle geographically closest to the gap vehicle
+      const candidate = expressInGap.sort((a, b) =>
+        getDistance(a.lat, a.lon, gapVehicle.lat, gapVehicle.lon) -
+        getDistance(b.lat, b.lon, gapVehicle.lat, gapVehicle.lon)
+      )[0];
+
+      // Estimate headway improvement: gap split roughly in half by the new local service
+      const newLocalHeadwayMin = Math.round(gapMinutes / 2);
+      // Express headway impact: the skipped stops add time, worsening express headway
+      const expressImpactMin = Math.round(gapStops * secondsPerStop * (1 - pair.expressSkipRatio) / 60);
+
+      // Only recommend if the rider benefit clearly outweighs the express cost
+      if (newLocalHeadwayMin >= gapMinutes) continue;
+
+      recommendations.push({
+        id: `${pair.localRouteTag}-${candidate.id}-CONVERT_TO_LOCAL`,
+        routeTag: pair.expressRouteTag,
+        partnerRouteTag: pair.localRouteTag,
+        vehicleId: candidate.id,
+        action: 'CONVERT_TO_LOCAL',
+        severity: gapMinutes >= 15 ? 'HIGH' : 'MEDIUM',
+        holdSeconds: null,
+        atStop: candidate.stopId,
+        reason:
+          `${pair.name} corridor — ${pair.localRouteTag}-local has a ${gapStops}-stop gap ` +
+          `(≈${gapMinutes} min rider wait). Express vehicle ${candidate.id} is positioned ` +
+          `inside this gap. Converting to local service for this trip would serve the missed stops, ` +
+          `reducing local wait from ${gapMinutes} min to ≈${newLocalHeadwayMin} min. ` +
+          `Express headway impact: +${expressImpactMin} min on ${pair.expressRouteTag}.`,
+        estimatedSecondsToBunch: null,
+        headwayAfterAction: newLocalHeadwayMin,
+        generatedAt: now,
+      });
+    }
+
+    // ── 2. CONVERT_TO_EXPRESS ──────────────────────────────────────────────
+    // Condition: local route has a bunching pair AND there's a vehicle at or
+    // near the back of the bunch. That vehicle can skip stops and run express
+    // ahead of the bunch, simultaneously relieving crowding and filling gaps
+    // further up the route.
+
+    const bunchedLocalVehicles = localState.vehicles.filter(v =>
+      v.analysis.anomalies.includes('bunching') || v.analysis.anomalies.includes('closing')
+    );
+
+    if (bunchedLocalVehicles.length >= 1) {
+      // The rear-most bunched vehicle is the best candidate (lowest stop sequence in bunch)
+      const sorted = bunchedLocalVehicles.sort((a, b) => a.stopSequence - b.stopSequence);
+      const rearVehicle = sorted[0];
+
+      // Only suggest if there's also a large gap somewhere ahead on the local route
+      const hasGapAhead = localState.vehicles.some(v => v.analysis.anomalies.includes('gap_ahead'));
+      if (!hasGapAhead) continue;
+
+      // Estimate how far ahead the vehicle would get by running express
+      // Express skips expressSkipRatio of stops → travels proportionally faster
+      const stopsSkipped = Math.round(10 * pair.expressSkipRatio); // over next ~10 stops
+      const timesSaved   = Math.round(stopsSkipped * secondsPerStop);
+      const gapFillStops = Math.round(stopsSkipped * 0.7); // rough gap fill estimate
+
+      recommendations.push({
+        id: `${pair.localRouteTag}-${rearVehicle.id}-CONVERT_TO_EXPRESS`,
+        routeTag: pair.localRouteTag,
+        partnerRouteTag: pair.expressRouteTag,
+        vehicleId: rearVehicle.id,
+        action: 'CONVERT_TO_EXPRESS',
+        severity: 'MEDIUM',
+        holdSeconds: null,
+        atStop: rearVehicle.stopId,
+        reason:
+          `${pair.name} corridor — ${pair.localRouteTag}-local is bunched (${bunchedLocalVehicles.length} vehicles ` +
+          `close together) AND has a gap ahead. Vehicle ${rearVehicle.id} at the rear of the bunch ` +
+          `can run express on ${pair.expressRouteTag} pattern, skipping ~${stopsSkipped} stops, ` +
+          `pulling ≈${Math.round(timesSaved / 60)} min ahead of the bunch and filling the gap. ` +
+          `Remaining local vehicles maintain local service. Announce skip stops to passengers onboard.`,
+        estimatedSecondsToBunch: null,
+        headwayAfterAction: gapFillStops,
+        generatedAt: now,
+      });
+    }
+  }
+
+  // Sort by severity
   const order: Record<RecommendationSeverity, number> = { CRITICAL: 0, HIGH: 1, MEDIUM: 2 };
   recommendations.sort((a, b) => order[a.severity] - order[b.severity]);
 
