@@ -3,6 +3,12 @@
 ## [Unreleased]
 
 ### Added
+- Bearing-based direction inference (`inferDirection`) — TTC GTFS-RT reports dir:0 for all vehicles; bearing correctly separates northbound/southbound on 510 and eastbound/westbound on 504/501
+- `buildPredictionIndex` — parses GTFS-RT trip updates feed into a tripId→stopId→time lookup (groundwork for schedule deviation)
+- `/api/anomalies` endpoint — flat list of all vehicles with active anomalies across monitored routes, with gapAhead, dwellPolls, and inferredDir
+- Per-vehicle analysis attached to every vehicle in `/api/state` response
+- Both feeds (vehicle positions + trip updates) fetched in parallel each poll
+- `tripId` added to `Vehicle` type
 - Stop-sequence based route analysis (`analyzeRoute`) replacing proximity bunching check
 - Three new signals: `bunchingPairs` (gap ≤ 1 stop), `closingPairs` (gap shrinking — pre-bunch warning), `dwellAnomalies` (stopped ≥ 30s), `largeGaps` (gap > 2× average)
 - Per-route vehicle history retained between polls to enable rate-of-change detection

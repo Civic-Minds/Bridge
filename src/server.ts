@@ -1,6 +1,6 @@
 import express, { Request, Response } from 'express';
 import cors from 'cors';
-import { analyzeRoute, getDistance } from './analysis';
+import { analyzeRoute, buildPredictionIndex, getDistance } from './analysis';
 import { Vehicle, VehicleHistory, RouteState, ConflictZone } from './types';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -15,6 +15,7 @@ app.use(express.json());
 app.use(express.static('public'));
 
 const TTC_VEHICLE_POSITIONS_URL = 'https://bustime.ttc.ca/gtfsrt/vehicles';
+const TTC_TRIP_UPDATES_URL      = 'https://bustime.ttc.ca/gtfsrt/trips';
 
 const CONFIG = {
   routes: ['510', '504', '501'],
@@ -38,8 +39,6 @@ const CONFLICT_ZONES: ConflictZone[] = [
 ];
 
 let systemState: Record<string, RouteState> = {};
-
-// Vehicle history per route — retained between polls for rate-of-change signals
 const vehicleHistory: Record<string, VehicleHistory> = {};
 
 function initRoutes(): void {
@@ -63,18 +62,31 @@ function initRoutes(): void {
 
 async function poll(): Promise<void> {
   try {
-    const res = await fetch(TTC_VEHICLE_POSITIONS_URL);
-    if (!res.ok) throw new Error(`GTFS-RT fetch failed: ${res.status}`);
+    // Fetch both feeds in parallel
+    const [vehicleRes, tripRes] = await Promise.all([
+      fetch(TTC_VEHICLE_POSITIONS_URL),
+      fetch(TTC_TRIP_UPDATES_URL),
+    ]);
 
-    const buffer = await res.arrayBuffer();
-    const feed = (GtfsRealtimeBindings as any).transit_realtime.FeedMessage.decode(
-      new Uint8Array(buffer)
-    );
+    if (!vehicleRes.ok) throw new Error(`Vehicle feed failed: ${vehicleRes.status}`);
+    if (!tripRes.ok)    throw new Error(`Trip feed failed: ${tripRes.status}`);
 
+    const [vehicleBuf, tripBuf] = await Promise.all([
+      vehicleRes.arrayBuffer(),
+      tripRes.arrayBuffer(),
+    ]);
+
+    const RT = (GtfsRealtimeBindings as any).transit_realtime;
+    const vehicleFeed = RT.FeedMessage.decode(new Uint8Array(vehicleBuf));
+    const tripFeed    = RT.FeedMessage.decode(new Uint8Array(tripBuf));
+
+    const predictions = buildPredictionIndex(tripFeed.entity);
+
+    // Bucket vehicles by route
     const byRoute: Record<string, Vehicle[]> = {};
     for (const tag of CONFIG.routes) byRoute[tag] = [];
 
-    for (const entity of (feed as any).entity) {
+    for (const entity of vehicleFeed.entity) {
       const v = entity.vehicle;
       if (!v?.position) continue;
 
@@ -94,6 +106,7 @@ async function poll(): Promise<void> {
         stopId: v.stopId ?? '',
         currentStatus: v.currentStatus ?? 0,
         reportedAt: v.timestamp?.low ?? 0,
+        tripId: v.trip?.tripId ?? '',
       });
     }
 
@@ -102,11 +115,15 @@ async function poll(): Promise<void> {
 
     for (const tag of CONFIG.routes) {
       if (!systemState[tag]) continue;
-      const vehicles = byRoute[tag];
+      const rawVehicles = byRoute[tag];
 
-      const { metrics, updatedHistory } = analyzeRoute(vehicles, vehicleHistory[tag] ?? new Map());
+      const { vehicles, metrics, updatedHistory } = analyzeRoute(
+        rawVehicles,
+        vehicleHistory[tag] ?? new Map(),
+        predictions,
+      );
+
       vehicleHistory[tag] = updatedHistory;
-
       systemState[tag].vehicles = vehicles;
       systemState[tag].metrics = { activeCount: vehicles.length, ...metrics };
       systemState[tag].lastUpdated = now;
@@ -117,7 +134,7 @@ async function poll(): Promise<void> {
       `[Poll] ${new Date().toLocaleTimeString()} — ${totalVehicles} vehicles | ` +
       CONFIG.routes.map(t => {
         const m = systemState[t]?.metrics;
-        return `${t}: ${m?.bunchingPairs}b ${m?.closingPairs}c ${m?.dwellAnomalies}d`;
+        return `${t}: ${m?.bunchingPairs}b ${m?.closingPairs}c ${m?.dwellAnomalies}d ${m?.largeGaps}g`;
       }).join('  ')
     );
   } catch (err) {
@@ -133,6 +150,28 @@ setInterval(() => void poll(), POLL_INTERVAL_MS);
 
 app.get('/api/state', (_req: Request, res: Response) => {
   res.json({ agency: 'ttc', timestamp: Date.now(), routes: systemState, zones: CONFLICT_ZONES });
+});
+
+// Anomalies endpoint — flat list of vehicles with active anomalies, across all monitored routes
+app.get('/api/anomalies', (_req: Request, res: Response) => {
+  const anomalies = Object.values(systemState).flatMap(route =>
+    route.vehicles
+      .filter(v => v.analysis.anomalies.length > 0)
+      .map(v => ({
+        routeTag: route.tag,
+        routeTitle: route.title,
+        vehicleId: v.id,
+        anomalies: v.analysis.anomalies,
+        inferredDir: v.analysis.inferredDir,
+        gapAhead: v.analysis.gapAhead,
+        dwellPolls: v.analysis.dwellPolls,
+        stopId: v.stopId,
+        stopSequence: v.stopSequence,
+        lat: v.lat,
+        lon: v.lon,
+      }))
+  );
+  res.json({ timestamp: Date.now(), count: anomalies.length, anomalies });
 });
 
 app.post('/api/config/active-routes', (req: Request, res: Response) => {

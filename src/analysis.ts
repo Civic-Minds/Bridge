@@ -1,4 +1,12 @@
-import { Vehicle, VehicleHistory, VehicleRecord, RouteMetrics } from './types';
+import {
+  Vehicle,
+  VehicleWithAnalysis,
+  VehicleHistory,
+  VehicleRecord,
+  RouteMetrics,
+  AnomalyType,
+  PredictionIndex,
+} from './types';
 
 export function getDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6371e3;
@@ -13,41 +21,63 @@ export function getDistance(lat1: number, lon1: number, lat2: number, lon2: numb
 }
 
 /**
- * Analyzes a route's vehicle positions using stop-sequence data.
+ * Infers travel direction from bearing since TTC's GTFS-RT reports dir:0 for all vehicles.
  *
- * Returns route-level metrics and an updated history map for the next poll.
+ * Splits the compass into two halves: [0°, 180°) → '0', [180°, 360°) → '1'.
+ * Works correctly for N-S routes (510 Spadina) and E-W routes (504 King, 501 Queen).
+ * Note: vehicles turning at terminals may be temporarily misclassified, which is acceptable
+ * since terminal vehicles don't participate in meaningful gap comparisons.
+ */
+export function inferDirection(bearing: number): string {
+  const b = ((bearing % 360) + 360) % 360;
+  return b >= 180 ? '1' : '0';
+}
+
+/**
+ * Analyzes a route's vehicle positions using stop-sequence and bearing data.
  *
- * Signals computed:
- *  - bunchingPairs:  consecutive same-direction pairs with gap ≤ 1 stop
- *  - closingPairs:   pairs whose gap shrank since the last poll (pre-bunch warning)
- *  - dwellAnomalies: vehicles stopped at the same stop for 3+ consecutive polls (~30s)
- *  - largeGaps:      gaps more than 2× the average gap on that direction
+ * Returns:
+ *  - enriched vehicles with per-vehicle analysis (direction, gap, dwell, anomalies)
+ *  - route-level metrics
+ *  - updated history for the next poll
+ *
+ * Signals:
+ *  bunchingPairs  — consecutive same-direction pairs with gap ≤ 1 stop
+ *  closingPairs   — pairs whose gap shrank since the last poll (pre-bunch warning)
+ *  dwellAnomalies — vehicles stopped at the same stop for 3+ consecutive polls (~30s)
+ *  largeGaps      — gaps more than 2× the average gap (rider wait time risk)
  */
 export function analyzeRoute(
   vehicles: Vehicle[],
-  history: VehicleHistory
-): { metrics: Omit<RouteMetrics, 'activeCount'>; updatedHistory: VehicleHistory } {
-  // Group by direction, then sort ascending by stop sequence
+  history: VehicleHistory,
+  _predictions?: PredictionIndex, // reserved for schedule deviation (future use)
+): {
+  vehicles: VehicleWithAnalysis[];
+  metrics: Omit<RouteMetrics, 'activeCount'>;
+  updatedHistory: VehicleHistory;
+} {
+  // Assign inferred direction from bearing and group
   const byDir = new Map<string, Vehicle[]>();
   for (const v of vehicles) {
-    if (!v.dirTag) continue;
-    if (!byDir.has(v.dirTag)) byDir.set(v.dirTag, []);
-    byDir.get(v.dirTag)!.push(v);
+    const dir = inferDirection(v.heading);
+    if (!byDir.has(dir)) byDir.set(dir, []);
+    byDir.get(dir)!.push(v);
   }
   for (const arr of byDir.values()) {
     arr.sort((a, b) => a.stopSequence - b.stopSequence);
   }
 
   const updatedHistory: VehicleHistory = new Map();
+  const analysisMap = new Map<string, VehicleWithAnalysis>();
+
   let bunchingPairs = 0;
   let closingPairs = 0;
   let dwellAnomalies = 0;
   let largeGaps = 0;
 
-  for (const sorted of byDir.values()) {
+  for (const [dir, sorted] of byDir) {
     const n = sorted.length;
 
-    // Compute gap from each vehicle to the one ahead of it
     const gaps: (number | null)[] = sorted.map((_, i) =>
       i < n - 1 ? sorted[i + 1].stopSequence - sorted[i].stopSequence : null
     );
@@ -62,27 +92,33 @@ export function analyzeRoute(
       const v = sorted[i];
       const gap = gaps[i];
       const prev = history.get(v.id);
+      const anomalies: AnomalyType[] = [];
 
-      // Bunching: at most 1 stop between this vehicle and the one ahead
-      if (gap !== null && gap <= 1) bunchingPairs++;
-
-      // Closing: gap to the vehicle ahead shrank since the last poll
-      if (
-        gap !== null &&
-        prev?.gapAhead != null &&
-        prev.gapAhead > 1 &&
-        gap < prev.gapAhead
-      ) {
-        closingPairs++;
+      // Bunching: ≤ 1 stop gap to the vehicle ahead
+      if (gap !== null && gap <= 1) {
+        bunchingPairs++;
+        anomalies.push('bunching');
       }
 
-      // Large gap: more than 2× average (a gap that's likely to cause a bunch behind it)
-      if (gap !== null && avgGap > 0 && gap > avgGap * 2) largeGaps++;
+      // Closing: gap to vehicle ahead shrank since last poll
+      if (gap !== null && prev?.gapAhead != null && prev.gapAhead > 1 && gap < prev.gapAhead) {
+        closingPairs++;
+        if (!anomalies.includes('bunching')) anomalies.push('closing');
+      }
 
-      // Dwell: STOPPED_AT the same stop for consecutive polls
+      // Large gap after this vehicle (the vehicle behind will face a wait)
+      if (gap !== null && avgGap > 0 && gap > avgGap * 2) {
+        largeGaps++;
+        anomalies.push('gap_ahead');
+      }
+
+      // Dwell: STOPPED_AT the same stop for 3+ consecutive polls (~30s)
       const wasStopped = prev?.status === 2 && prev?.stopId === v.stopId;
-      const dwellPolls = v.currentStatus === 2 ? (wasStopped ? (prev!.dwellPolls + 1) : 1) : 0;
-      if (dwellPolls >= 3) dwellAnomalies++;
+      const dwellPolls = v.currentStatus === 2 ? (wasStopped ? prev!.dwellPolls + 1 : 1) : 0;
+      if (dwellPolls >= 3) {
+        dwellAnomalies++;
+        anomalies.push('dwell');
+      }
 
       const record: VehicleRecord = {
         stopSequence: v.stopSequence,
@@ -90,13 +126,48 @@ export function analyzeRoute(
         status: v.currentStatus,
         dwellPolls,
         gapAhead: gap,
+        inferredDir: dir,
       };
       updatedHistory.set(v.id, record);
+
+      analysisMap.set(v.id, {
+        ...v,
+        analysis: { inferredDir: dir, gapAhead: gap, dwellPolls, anomalies },
+      });
     }
   }
 
+  const enrichedVehicles = vehicles.map(v =>
+    analysisMap.get(v.id) ?? {
+      ...v,
+      analysis: { inferredDir: inferDirection(v.heading), gapAhead: null, dwellPolls: 0, anomalies: [] },
+    }
+  );
+
   return {
+    vehicles: enrichedVehicles,
     metrics: { bunchingPairs, closingPairs, dwellAnomalies, largeGaps },
     updatedHistory,
   };
+}
+
+/**
+ * Builds a PredictionIndex from a parsed GTFS-RT trips feed.
+ * Returns a map of tripId → (stopId → predicted arrival unix seconds).
+ */
+export function buildPredictionIndex(feedEntities: any[]): PredictionIndex {
+  const index: PredictionIndex = new Map();
+  for (const entity of feedEntities) {
+    const tu = entity.tripUpdate;
+    if (!tu?.trip?.tripId) continue;
+    const preds = new Map<string, number>();
+    for (const stu of tu.stopTimeUpdate ?? []) {
+      const time = stu.arrival?.time ?? stu.departure?.time;
+      if (stu.stopId && time) {
+        preds.set(stu.stopId, parseInt(time, 10));
+      }
+    }
+    if (preds.size > 0) index.set(tu.trip.tripId, preds);
+  }
+  return index;
 }
