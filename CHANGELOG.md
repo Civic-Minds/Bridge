@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.0] - 2026-03-22
+
+### Changed
+- **Time-based headway in `generateRecommendations`**: Replaced hardcoded `150m` stop spacing with a `stopSpacingM` parameter (default `150`). Callers pass the real per-route average stop spacing computed from GTFS geometry so hold times and time-to-bunch estimates reflect actual street geometry rather than a fixed constant.
+- **Time-based headway in `generateCrossRouteRecommendations`**: Replaced the flat `secondsPerStop = 45` parameter with `stopSpacingByRoute: Map<string, number>`. Seconds-per-stop is now derived per corridor pair from the local route's GTFS spacing and the live average speed of its vehicles. Falls back to `150m / 4.5 m/s ≈ 33s` when data is absent.
+- **`boot()` in `server.ts`**: After `loadGtfs()`, computes average stop spacing (m) per route by summing haversine distances between consecutive ordered stops and dividing by the number of gaps. Stored in `routeSpacing: Map<string, number>` and passed to both recommendation functions each poll.
+
+---
+
 ## [1.2.0] - 2026-03-22
 
 ### Added

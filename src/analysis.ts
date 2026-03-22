@@ -230,17 +230,18 @@ export function generateRecommendations(
   vehicles: VehicleWithAnalysis[],
   pollIntervalMs: number = 10000,
   policy: DispatchPolicy = DEFAULT_POLICY,
+  stopSpacingM: number = 150,
 ): DispatchRecommendation[] {
   const recommendations: DispatchRecommendation[] = [];
   const now = Date.now();
 
-  // Estimate seconds per stop from vehicle speeds (fallback: 45s/stop)
+  // Estimate seconds per stop from real stop spacing and observed vehicle speeds.
+  // stopSpacingM defaults to 150m if GTFS data is unavailable.
   const movingVehicles = vehicles.filter(v => v.speed > 0);
   const avgSpeedMs = movingVehicles.length > 0
     ? movingVehicles.reduce((s, v) => s + v.speed, 0) / movingVehicles.length
     : 4.5; // ~16 km/h default streetcar speed
-  // Rough stop spacing ~150m on TTC streetcar routes
-  const secondsPerStop = Math.round(150 / avgSpeedMs);
+  const secondsPerStop = Math.round(stopSpacingM / avgSpeedMs);
 
   // Group by direction for gap context
   const byDir = new Map<string, VehicleWithAnalysis[]>();
@@ -398,14 +399,16 @@ export const TTC_CORRIDOR_PAIRS: CorridorPair[] = [
  *
  * The key insight: the data to do this has always existed in GTFS. We just never joined it.
  *
- * @param allRouteStates  Full state for every currently monitored route
- * @param corridorPairs   Registry of local/express pairs to evaluate (defaults to TTC registry)
- * @param secondsPerStop  Estimated travel time per stop (used for impact estimates)
+ * @param allRouteStates    Full state for every currently monitored route
+ * @param corridorPairs     Registry of local/express pairs to evaluate (defaults to TTC registry)
+ * @param stopSpacingByRoute  Average stop spacing in metres per route tag, from GTFS geometry.
+ *                            Used together with observed vehicle speeds to estimate seconds/stop.
+ *                            Falls back to 150m (→ ~33s at 16 km/h) if a route is absent.
  */
 export function generateCrossRouteRecommendations(
   allRouteStates: Record<string, RouteState>,
   corridorPairs: CorridorPair[] = TTC_CORRIDOR_PAIRS,
-  secondsPerStop = 45,
+  stopSpacingByRoute: Map<string, number> = new Map(),
   policy: DispatchPolicy = DEFAULT_POLICY,
 ): DispatchRecommendation[] {
   // Short-circuit if the agency has disabled cross-route recommendations entirely
@@ -417,6 +420,15 @@ export function generateCrossRouteRecommendations(
   for (const pair of corridorPairs) {
     const localState   = allRouteStates[pair.localRouteTag];
     const expressState = allRouteStates[pair.expressRouteTag];
+
+    // Derive seconds-per-stop for this pair from the local route's GTFS stop spacing
+    // and the live average speed of its vehicles. Falls back to 150m / 4.5 m/s ≈ 33s.
+    const spacingM = stopSpacingByRoute.get(pair.localRouteTag) ?? 150;
+    const movingLocal = localState?.vehicles.filter(v => v.speed > 0) ?? [];
+    const avgSpeedMs = movingLocal.length > 0
+      ? movingLocal.reduce((s, v) => s + v.speed, 0) / movingLocal.length
+      : 4.5;
+    const secondsPerStop = Math.round(spacingM / avgSpeedMs);
 
     // Both routes must be actively monitored and have vehicles reporting
     if (!localState || !expressState) continue;

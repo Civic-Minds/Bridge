@@ -555,7 +555,7 @@ describe('DispatchPolicy enforcement', () => {
       '954': makeRouteState('954', expressVehicles),
     };
     const policy: DispatchPolicy = { ...DEFAULT_POLICY, disableCrossRouteRecommendations: true };
-    const recs = generateCrossRouteRecommendations(state, [TEST_PAIR], 45, policy);
+    const recs = generateCrossRouteRecommendations(state, [TEST_PAIR], new Map(), policy);
     expect(recs).toEqual([]);
   });
 });

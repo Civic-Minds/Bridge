@@ -104,6 +104,8 @@ let activePolicy: DispatchPolicy = { ...DEFAULT_POLICY };
 
 // Static GTFS data loaded once at startup
 let gtfsData: Map<string, GtfsRouteData> = new Map();
+// Average stop spacing (metres) per route, derived from GTFS geometry at startup
+let routeSpacing: Map<string, number> = new Map();
 
 function initRoutes(): void {
   systemState = {};
@@ -242,14 +244,15 @@ async function poll(): Promise<void> {
       systemState[tag].lastUpdated = now;
       totalVehicles += vehicles.length;
 
-      // Generate single-route dispatch recommendations, filtered by active policy
-      const recs = generateRecommendations(tag, vehicles, POLL_INTERVAL_MS, activePolicy);
+      // Generate single-route dispatch recommendations, filtered by active policy.
+      // Pass real GTFS stop spacing so secondsPerStop reflects actual street geometry.
+      const recs = generateRecommendations(tag, vehicles, POLL_INTERVAL_MS, activePolicy, routeSpacing.get(tag));
       systemRecommendations[tag] = enrichWithLoopData(recs, vehicles, tag);
     }
 
     // Cross-route recommendations: local/express corridor substitutions.
     // Runs once after all per-route analysis is complete, using the full system state.
-    const crossRouteRecs = generateCrossRouteRecommendations(systemState, undefined, undefined, activePolicy);
+    const crossRouteRecs = generateCrossRouteRecommendations(systemState, undefined, routeSpacing, activePolicy);
     // Store cross-route recs under a dedicated key so they don't collide with per-route recs
     systemRecommendations['_cross_route'] = crossRouteRecs;
 
@@ -271,6 +274,19 @@ async function boot(): Promise<void> {
   const gtfsDir = path.join(__dirname, '..', 'data', 'gtfs');
   try {
     gtfsData = await loadGtfs(gtfsDir, Object.keys(ROUTE_META));
+    // Compute average stop spacing per route from consecutive stop distances
+    for (const [tag, data] of gtfsData) {
+      const stops = data.stops;
+      if (stops.length < 2) continue;
+      let total = 0;
+      for (let i = 0; i < stops.length - 1; i++) {
+        total += getDistance(stops[i].lat, stops[i].lon, stops[i + 1].lat, stops[i + 1].lon);
+      }
+      routeSpacing.set(tag, total / (stops.length - 1));
+    }
+    console.log('[GTFS] Stop spacing (m):', Object.fromEntries(
+      [...routeSpacing.entries()].map(([k, v]) => [k, Math.round(v)])
+    ));
   } catch (err) {
     console.warn('[GTFS] Failed to load static data — routes will have no paths or stops:', (err as Error).message);
   }
