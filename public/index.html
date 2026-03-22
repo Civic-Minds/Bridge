@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bridge | Network Operations</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        :root {
+            /* Professional Slate Palette (Dark Mode) */
+            --bg: #0f172a;
+            /* Slate 900 */
+            --card-bg: #1e293b;
+            /* Slate 800 */
+            --card-border: #334155;
+            /* Slate 700 */
+            --accent: #3b82f6;
+            /* Blue 500 */
+            --danger: #ef4444;
+            /* Red 500 */
+            --warning: #f59e0b;
+            /* Amber 500 */
+            --text: #f8fafc;
+            /* Slate 50 */
+            --text-dim: #94a3b8;
+            /* Slate 400 */
+            --sidebar-width: 380px;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Inter', sans-serif;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        body {
+            background-color: var(--bg);
+            color: var(--text);
+            overflow: hidden;
+            height: 100vh;
+            display: grid;
+            grid-template-columns: var(--sidebar-width) 1fr;
+        }
+
+        /* Sidebar Styling */
+        aside {
+            background: var(--bg);
+            border-right: 1px solid var(--card-border);
+            display: flex;
+            flex-direction: column;
+            z-index: 1000;
+            /* Ensure above map controls */
+            /* Removed heavy box-shadow for cleaner look */
+        }
+
+        .sidebar-header {
+            padding: 1.5rem;
+            border-bottom: 1px solid var(--card-border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .brand-container {
+            display: flex;
+            align-items: center;
+        }
+
+        .brand {
+            font-size: 1.25rem;
+            letter-spacing: -0.5px;
+            color: var(--text);
+            font-weight: 600;
+        }
+
+        .status-badge {
+            font-size: 0.7rem;
+            background: rgba(59, 130, 246, 0.15);
+            color: var(--accent);
+            padding: 3px 8px;
+            border-radius: 6px;
+            font-weight: 600;
+            margin-left: 12px;
+            border: 1px solid rgba(59, 130, 246, 0.3);
+            letter-spacing: 0.5px;
+        }
+
+        /* Dashboard Stats */
+        .stats-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+            padding: 1.5rem;
+        }
+
+        .stat-card {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            padding: 1rem;
+            border-radius: 8px;
+        }
+
+        .stat-val {
+            font-size: 1.5rem;
+            font-weight: 600;
+            color: var(--text);
+            margin-top: 4px;
+        }
+
+        .stat-label {
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            font-weight: 500;
+        }
+
+        /* Scrollable Content */
+        .sidebar-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 0 1.5rem 1.5rem 1.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
+        }
+
+        .section-title {
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 0.8rem;
+            font-weight: 600;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        /* Route List */
+        .route-item {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            padding: 1rem;
+            border-radius: 6px;
+            margin-bottom: 0.5rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: border-color 0.2s;
+        }
+
+        .route-item:hover {
+            border-color: var(--text-dim);
+        }
+
+        .route-tag {
+            font-weight: 600;
+            margin-right: 10px;
+            font-size: 1rem;
+        }
+
+        .route-stats {
+            font-size: 0.85rem;
+            color: var(--text-dim);
+            text-align: right;
+        }
+
+        .badge-danger {
+            background: rgba(239, 68, 68, 0.2);
+            color: var(--danger);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-weight: 600;
+            font-size: 0.75rem;
+            margin-left: 8px;
+        }
+
+        /* Incident Feed */
+        .log-container {
+            background: #0b101d;
+            /* Slightly darker than bg for contrast */
+            border: 1px solid var(--card-border);
+            border-radius: 6px;
+            padding: 0.75rem;
+            font-family: 'Inter', sans-serif;
+            /* Keep consistent font */
+            font-size: 0.85rem;
+            min-height: 200px;
+        }
+
+        .log-item {
+            padding: 8px 0;
+            border-bottom: 1px solid var(--card-border);
+            display: flex;
+            gap: 12px;
+            align-items: flex-start;
+        }
+
+        .log-item:last-child {
+            border-bottom: none;
+        }
+
+        .log-time {
+            color: var(--text-dim);
+            font-variant-numeric: tabular-nums;
+            font-size: 0.75rem;
+            white-space: nowrap;
+            margin-top: 2px;
+        }
+
+        .log-item.danger {
+            color: var(--danger);
+        }
+
+        .log-item.warning {
+            color: var(--warning);
+        }
+
+        .log-item.dim {
+            color: var(--text-dim);
+            font-style: italic;
+        }
+
+        /* Map Area */
+        main {
+            position: relative;
+            background: #111;
+            /* Fallback */
+        }
+
+        #map {
+            width: 100%;
+            height: 100%;
+            /* Removed filters for native map look */
+            background: #0f172a;
+        }
+
+        /* Removed .leaflet-tile-pane filter */
+
+        .vehicle-marker {
+            width: 0;
+            height: 0;
+            border-left: 6px solid transparent;
+            border-right: 6px solid transparent;
+            border-bottom: 12px solid #fff;
+            /* Removed drop-shadow filter */
+        }
+
+        #last-updated {
+            position: absolute;
+            bottom: 24px;
+            right: 24px;
+            background: var(--card-bg);
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            z-index: 500;
+            border: 1px solid var(--card-border);
+            font-variant-numeric: tabular-nums;
+        }
+
+        /* Modal */
+        #settings-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(15, 23, 42, 0.8);
+            /* Slate tint */
+            backdrop-filter: blur(4px);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 2000;
+        }
+
+        .settings-box {
+            background: var(--card-bg);
+            padding: 2rem;
+            border-radius: 8px;
+            border: 1px solid var(--card-border);
+            width: 90%;
+            max-width: 400px;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
+        }
+
+        .settings-box h3 {
+            margin-bottom: 0.5rem;
+            color: var(--text);
+        }
+
+        input {
+            background: var(--bg);
+            border: 1px solid var(--card-border);
+            color: var(--text);
+            padding: 10px;
+            width: 100%;
+            margin: 10px 0;
+            border-radius: 4px;
+        }
+
+        input:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+
+        button {
+            padding: 8px 16px;
+            cursor: pointer;
+            border-radius: 4px;
+            border: none;
+            font-weight: 500;
+            font-size: 0.9rem;
+            transition: opacity 0.2s;
+        }
+
+        button:hover {
+            opacity: 0.9;
+        }
+
+        .btn-primary {
+            background: var(--accent);
+            color: #fff;
+        }
+
+        .btn-ghost {
+            background: transparent;
+            color: var(--text-dim);
+        }
+
+        .btn-small {
+            background: transparent;
+            border: 1px solid var(--card-border);
+            color: var(--text-dim);
+            padding: 4px 10px;
+            font-size: 0.75rem;
+        }
+
+        .btn-small:hover {
+            border-color: var(--text);
+            color: var(--text);
+        }
+    </style>
+</head>
+
+<body>
+    <aside>
+        <div class="sidebar-header">
+            <div class="brand-container">
+                <span class="brand">BRIDGE</span>
+                <span class="status-badge">NET OPS</span>
+            </div>
+            <button class="btn-small" onclick="toggleSettings(true)">CONFIG</button>
+        </div>
+
+        <div class="stats-row">
+            <div class="stat-card">
+                <div class="stat-label">Active Units</div>
+                <div class="stat-val" id="stat-count">--</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">System Alerts</div>
+                <div class="stat-val" id="stat-alerts" style="color:var(--danger)">--</div>
+            </div>
+        </div>
+
+        <div class="sidebar-content">
+            <div>
+                <div class="section-title">Active Routes</div>
+                <div id="route-list-container">Loading...</div>
+            </div>
+
+            <div style="flex:1; display:flex; flex-direction:column;">
+                <div class="section-title">Incident Feed</div>
+                <div class="log-container" id="incident-log">
+                    <div class="log-item dim">Initializing Network...</div>
+                </div>
+            </div>
+        </div>
+    </aside>
+
+    <main>
+        <div id="map"></div>
+        <div id="last-updated">SYNC: --:--</div>
+    </main>
+
+    <div id="settings-overlay">
+        <div class="settings-box">
+            <h3>Configuration</h3>
+            <p style="font-size:0.85rem; color:var(--text-dim); margin-bottom:1rem;">Enter route tags separated by comma
+            </p>
+            <input id="routes-input" type="text" placeholder="510, 504">
+            <div style="display:flex; gap:10px; margin-top:1rem;">
+                <button class="btn-primary" onclick="saveConfig()">Update Network</button>
+                <button class="btn-ghost" onclick="toggleSettings(false)">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script type="module">
+        import { initMap, updateMapState, startAnimationLoop } from './js/map.js';
+        import { initUI, updateDashboard } from './js/ui.js';
+        import { fetchState } from './js/api.js';
+
+        async function init() {
+            initUI();
+            initMap('map');
+            startAnimationLoop();
+
+            async function loop() {
+                const state = await fetchState();
+                if (state) {
+                    updateMapState(state);
+                    updateDashboard(state);
+                }
+            }
+
+            setInterval(loop, 4000); // 4s Poll for UI (Server polls every 10s)
+            loop();
+        }
+
+        init();
+    </script>
+</body>
+
+</html>
