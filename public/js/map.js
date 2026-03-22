@@ -42,7 +42,8 @@ export function updateMapState(state) {
 
     if (layers.paths.getLayers().length === 0) {
         Object.values(state.routes).forEach(route => {
-            if (route.paths) {
+            // Route polylines
+            if (route.paths && route.paths.length > 0) {
                 route.paths.forEach(path => {
                     L.polyline(path, {
                         color: route.color || '#00f2ff',
@@ -50,6 +51,22 @@ export function updateMapState(state) {
                         opacity: 0.6,
                         smoothFactor: 1
                     }).addTo(layers.paths);
+                });
+            }
+
+            // Stop markers — small circles, tooltip on hover
+            if (route.stops && route.stops.length > 0) {
+                route.stops.forEach(stop => {
+                    L.circleMarker([stop.lat, stop.lon], {
+                        radius: 3,
+                        color: route.color || '#00f2ff',
+                        fillColor: '#1a1a2e',
+                        fillOpacity: 1,
+                        weight: 1.5,
+                        opacity: 0.7,
+                    })
+                    .bindTooltip(stop.name, { permanent: false, direction: 'top', className: 'stop-tooltip' })
+                    .addTo(layers.stops);
                 });
             }
         });
@@ -60,7 +77,7 @@ export function updateMapState(state) {
                 color: '#ff3e3e',
                 fillColor: '#ff3e3e',
                 fillOpacity: 0.1,
-                radius: 60 // approx 0.0006 deg ~ 60m
+                radius: 60
             }).addTo(layers.zones);
         });
     }

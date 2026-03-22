@@ -1,6 +1,23 @@
 # Changelog
 
-## [1.1.0] — 2026-03-22
+All notable changes to this project will be documented in this file.
+
+## [1.2.0] - 2026-03-22
+
+### Added
+- **Static GTFS Loader** (`src/gtfs.ts`): Parses `stops.txt`, `trips.txt`, `shapes.txt`, and `stop_times.txt` at server startup. Filters to monitored routes only so `stop_times.txt` (the large file) doesn't load the full TTC dataset. Uses a proper quoted CSV parser to handle stop names with commas.
+- **Route Polylines**: `RouteState.paths` is now populated with actual TTC shape geometry from `shapes.txt`. The map renders route lines on first load instead of leaving the paths layer empty.
+- **Stop Markers**: `RouteState.stops` is now populated with ordered stops from the representative (longest) trip per route. The map renders small circle markers with hover tooltips showing stop names.
+- **`scripts/fetch-gtfs.ts`**: Downloads and extracts TTC GTFS static data from Toronto Open Data on startup. Uses the CKAN API to resolve the current download URL. Re-downloads if data is older than 45 days.
+- **`data/gtfs/`**: Local directory for GTFS files (excluded from git). `data/.gitkeep` tracks the directory.
+
+### Changed
+- **`RouteState` types**: `stops: unknown[]` and `paths: unknown[]` replaced with `stops: GtfsStop[]` and `paths: [number, number][][]`. `GtfsStop` interface added to `types.ts`.
+- **Server boot sequence**: Startup is now async — GTFS data loads before routes are initialized. Falls back gracefully to empty paths/stops if the GTFS directory is missing.
+- **`npm start` / `npm run dev`**: Both scripts now run `fetch-gtfs.ts` before the server, ensuring GTFS data is always present on boot.
+- **`tsconfig.json`**: `rootDir` widened to `"."` and `scripts/**/*` added to `include` so the fetch script type-checks alongside `src/`.
+
+## [1.1.0] - 2026-03-22
 
 ### Added — Dispatch Action Engine
 - `generateRecommendations()` — produces specific, actionable dispatch instructions
@@ -91,7 +108,7 @@
 
 ---
 
-## [0.1.0] — 2026-03-22
+## [0.1.0] - 2026-03-22
 
 - Initial prototype: NextBus-based vehicle polling for TTC routes 510, 504, 501
 - Bunching detection (N² same-direction proximity check, < 150m threshold)

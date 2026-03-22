@@ -54,12 +54,19 @@ export interface RouteMetrics {
   largeGaps: number;      // gaps more than 2× the route's average gap
 }
 
+export interface GtfsStop {
+  id: string;
+  name: string;
+  lat: number;
+  lon: number;
+}
+
 export interface RouteState {
   tag: string;
   title: string;
   color: string;
-  stops: unknown[];
-  paths: unknown[];
+  stops: GtfsStop[];
+  paths: [number, number][][];
   vehicles: VehicleWithAnalysis[];
   metrics: RouteMetrics;
   lastUpdated: number | null;

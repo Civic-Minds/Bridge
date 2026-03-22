@@ -1,7 +1,9 @@
 import express, { Request, Response } from 'express';
 import cors from 'cors';
+import * as path from 'path';
 import { analyzeRoute, buildPredictionIndex, generateRecommendations, generateCrossRouteRecommendations, getDistance } from './analysis';
-import { Vehicle, VehicleHistory, RouteState, ConflictZone, DispatchRecommendation, DispatchPolicy, DEFAULT_POLICY } from './types';
+import { Vehicle, VehicleHistory, RouteState, ConflictZone, DispatchRecommendation, DispatchPolicy, DEFAULT_POLICY, GtfsStop } from './types';
+import { loadGtfs, GtfsRouteData } from './gtfs';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const GtfsRealtimeBindings = require('gtfs-realtime-bindings');
@@ -100,17 +102,21 @@ const vehicleHistory: Record<string, VehicleHistory> = {};
 // Active dispatch policy — mutable at runtime via POST /api/policy
 let activePolicy: DispatchPolicy = { ...DEFAULT_POLICY };
 
+// Static GTFS data loaded once at startup
+let gtfsData: Map<string, GtfsRouteData> = new Map();
+
 function initRoutes(): void {
   systemState = {};
   systemRecommendations = {};
   for (const tag of CONFIG.routes) {
     const meta = ROUTE_META[tag] ?? { title: `Route ${tag}`, color: '#00f2ff' };
+    const gtfs = gtfsData.get(tag);
     systemState[tag] = {
       tag,
       title: meta.title,
       color: meta.color,
-      stops: [],
-      paths: [],
+      stops: gtfs?.stops ?? [],
+      paths: gtfs?.paths ?? [],
       vehicles: [],
       metrics: { activeCount: 0, bunchingPairs: 0, closingPairs: 0, dwellAnomalies: 0, largeGaps: 0 },
       lastUpdated: null,
@@ -261,9 +267,19 @@ async function poll(): Promise<void> {
   }
 }
 
-initRoutes();
-void poll();
-setInterval(() => void poll(), POLL_INTERVAL_MS);
+async function boot(): Promise<void> {
+  const gtfsDir = path.join(__dirname, '..', 'data', 'gtfs');
+  try {
+    gtfsData = await loadGtfs(gtfsDir, Object.keys(ROUTE_META));
+  } catch (err) {
+    console.warn('[GTFS] Failed to load static data — routes will have no paths or stops:', (err as Error).message);
+  }
+  initRoutes();
+  void poll();
+  setInterval(() => void poll(), POLL_INTERVAL_MS);
+}
+
+void boot();
 
 // --- API ---
 
