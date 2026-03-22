@@ -1,5 +1,5 @@
-import { getDistance, inferDirection, analyzeRoute } from '../analysis';
-import { Vehicle, VehicleHistory } from '../types';
+import { getDistance, inferDirection, analyzeRoute, generateRecommendations } from '../analysis';
+import { Vehicle, VehicleHistory, PredictionIndex, VehicleWithAnalysis } from '../types';
 
 function makeVehicle(overrides: Partial<Vehicle>): Vehicle {
   return {
@@ -202,5 +202,139 @@ describe('analyzeRoute — per-vehicle analysis', () => {
     const { vehicles: enriched } = analyzeRoute(vehicles, emptyHistory);
     expect(enriched.find(v => v.id === 'v1')!.analysis.inferredDir).toBe('0');
     expect(enriched.find(v => v.id === 'v2')!.analysis.inferredDir).toBe('1');
+  });
+
+  it('sets scheduleDeviation to null when no predictions provided', () => {
+    const v = makeVehicle({ id: 'v1', heading: 160 });
+    const { vehicles: enriched } = analyzeRoute([v], emptyHistory);
+    expect(enriched[0].analysis.scheduleDeviation).toBeNull();
+  });
+
+  it('calculates positive scheduleDeviation (late) from predictions', () => {
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const scheduledTime = nowSeconds - 180; // scheduled 3 minutes ago = 180s late
+    const predictions: PredictionIndex = new Map([
+      ['trip_1', new Map([['stop_1', scheduledTime]])],
+    ]);
+    const v = makeVehicle({
+      id: 'v1',
+      heading: 160,
+      tripId: 'trip_1',
+      stopId: 'stop_1',
+      reportedAt: nowSeconds,
+    });
+    const { vehicles: enriched } = analyzeRoute([v], emptyHistory, predictions);
+    const dev = enriched[0].analysis.scheduleDeviation;
+    expect(dev).not.toBeNull();
+    expect(dev!).toBeGreaterThan(0);
+    expect(enriched[0].analysis.anomalies).toContain('late');
+  });
+
+  it('calculates negative scheduleDeviation (early) from predictions', () => {
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const scheduledTime = nowSeconds + 120; // scheduled 2 minutes from now = 120s early
+    const predictions: PredictionIndex = new Map([
+      ['trip_1', new Map([['stop_1', scheduledTime]])],
+    ]);
+    const v = makeVehicle({
+      id: 'v1',
+      heading: 160,
+      tripId: 'trip_1',
+      stopId: 'stop_1',
+      reportedAt: nowSeconds,
+    });
+    const { vehicles: enriched } = analyzeRoute([v], emptyHistory, predictions);
+    const dev = enriched[0].analysis.scheduleDeviation;
+    expect(dev).not.toBeNull();
+    expect(dev!).toBeLessThan(0);
+    expect(enriched[0].analysis.anomalies).toContain('early');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// generateRecommendations
+// ---------------------------------------------------------------------------
+
+function makeAnalyzedVehicle(
+  id: string,
+  stopSequence: number,
+  heading: number,
+  anomalies: string[] = [],
+  gapAhead: number | null = null,
+): VehicleWithAnalysis {
+  return {
+    ...makeVehicle({ id, heading, stopSequence }),
+    analysis: {
+      inferredDir: heading < 180 ? '0' : '1',
+      gapAhead,
+      dwellPolls: 0,
+      anomalies: anomalies as any,
+      scheduleDeviation: null,
+    },
+  };
+}
+
+describe('generateRecommendations', () => {
+  it('returns empty array when no vehicles', () => {
+    expect(generateRecommendations('510', [])).toEqual([]);
+  });
+
+  it('generates a HOLD recommendation for a bunching pair', () => {
+    const vehicles = [
+      makeAnalyzedVehicle('v1', 5, 160, ['bunching'], 1),
+      makeAnalyzedVehicle('v2', 6, 164, [], null),
+    ];
+    const recs = generateRecommendations('510', vehicles);
+    expect(recs.length).toBeGreaterThan(0);
+    const hold = recs.find(r => r.action === 'HOLD');
+    expect(hold).toBeDefined();
+    expect(hold!.severity).toBe('CRITICAL');
+    expect(hold!.vehicleId).toBe('v1');
+    expect(hold!.routeTag).toBe('510');
+  });
+
+  it('generates a HOLD recommendation for a closing pair', () => {
+    const vehicles = [
+      makeAnalyzedVehicle('v1', 4, 160, ['closing'], 3),
+      makeAnalyzedVehicle('v2', 7, 164, [], null),
+    ];
+    const recs = generateRecommendations('510', vehicles);
+    const hold = recs.find(r => r.action === 'HOLD');
+    expect(hold).toBeDefined();
+    expect(['HIGH', 'MEDIUM']).toContain(hold!.severity);
+  });
+
+  it('generates a RELEASE_EARLY recommendation for a large gap', () => {
+    const vehicles = [
+      makeAnalyzedVehicle('v1', 3, 160, ['gap_ahead'], 12),
+      makeAnalyzedVehicle('v2', 15, 164, [], null),
+    ];
+    const recs = generateRecommendations('510', vehicles);
+    const rel = recs.find(r => r.action === 'RELEASE_EARLY');
+    expect(rel).toBeDefined();
+  });
+
+  it('sorts CRITICAL before HIGH before MEDIUM', () => {
+    const vehicles = [
+      makeAnalyzedVehicle('v1', 5, 160, ['bunching'], 1),
+      makeAnalyzedVehicle('v2', 6, 164, ['gap_ahead'], 10),
+      makeAnalyzedVehicle('v3', 16, 164, [], null),
+    ];
+    const recs = generateRecommendations('510', vehicles);
+    const order: Record<string, number> = { CRITICAL: 0, HIGH: 1, MEDIUM: 2 };
+    for (let i = 0; i < recs.length - 1; i++) {
+      expect(order[recs[i].severity]).toBeLessThanOrEqual(order[recs[i + 1].severity]);
+    }
+  });
+
+  it('includes reason string that names both vehicles', () => {
+    const vehicles = [
+      makeAnalyzedVehicle('v1', 5, 160, ['bunching'], 1),
+      makeAnalyzedVehicle('v2', 6, 164, [], null),
+    ];
+    const recs = generateRecommendations('510', vehicles);
+    const hold = recs.find(r => r.action === 'HOLD')!;
+    expect(hold.reason).toContain('v1');
+    expect(hold.reason).toContain('v2');
   });
 });

@@ -11,9 +11,20 @@ export async function fetchState() {
     }
 }
 
+export async function fetchRecommendations() {
+    try {
+        const res = await fetch('/api/recommendations');
+        if (!res.ok) throw new Error('Failed to fetch recommendations');
+        return await res.json();
+    } catch (e) {
+        console.error("Recommendations API Error:", e);
+        return null;
+    }
+}
+
 export async function fetchAvailableRoutes() {
     try {
-        const agency = 'ttc'; // Todo: make dynamic if needed
+        const agency = 'ttc';
         const res = await fetch(`/api/config/routes?a=${agency}`);
         return await res.json();
     } catch (e) {
