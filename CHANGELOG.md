@@ -3,6 +3,11 @@
 ## [Unreleased]
 
 ### Added
+- Stop-sequence based route analysis (`analyzeRoute`) replacing proximity bunching check
+- Three new signals: `bunchingPairs` (gap ≤ 1 stop), `closingPairs` (gap shrinking — pre-bunch warning), `dwellAnomalies` (stopped ≥ 30s), `largeGaps` (gap > 2× average)
+- Per-route vehicle history retained between polls to enable rate-of-change detection
+- `VehicleRecord` and `VehicleHistory` types for cross-poll state
+- New vehicle fields captured from GTFS-RT: `stopSequence`, `stopId`, `currentStatus`, `reportedAt`
 - TypeScript migration: `src/types.ts`, `src/analysis.ts`, `src/server.ts`
 - `tsconfig.json` (ES2020, strict, commonjs)
 - `src/__tests__/analysis.test.ts` — Jest/ts-jest test suite for `getDistance` and `detectBunching`

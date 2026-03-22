@@ -1,7 +1,7 @@
 import express, { Request, Response } from 'express';
 import cors from 'cors';
-import { getDistance, detectBunching } from './analysis';
-import { Vehicle, RouteState, ConflictZone } from './types';
+import { analyzeRoute, getDistance } from './analysis';
+import { Vehicle, VehicleHistory, RouteState, ConflictZone } from './types';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const GtfsRealtimeBindings = require('gtfs-realtime-bindings');
@@ -20,16 +20,15 @@ const CONFIG = {
   routes: ['510', '504', '501'],
 };
 
-// Display metadata for known TTC surface routes
 const ROUTE_META: Record<string, { title: string; color: string }> = {
-  '501': { title: '501-Queen',        color: '#ff69b4' },
-  '504': { title: '504-King',         color: '#ffaa00' },
-  '505': { title: '505-Dundas',       color: '#a855f7' },
-  '506': { title: '506-Carlton',      color: '#22d3ee' },
-  '509': { title: '509-Harbourfront', color: '#34d399' },
-  '510': { title: '510-Spadina',      color: '#ff0000' },
-  '511': { title: '511-Bathurst',     color: '#60a5fa' },
-  '512': { title: '512-St Clair',     color: '#f97316' },
+  '501': { title: '501-Queen',         color: '#ff69b4' },
+  '504': { title: '504-King',          color: '#ffaa00' },
+  '505': { title: '505-Dundas',        color: '#a855f7' },
+  '506': { title: '506-Carlton',       color: '#22d3ee' },
+  '509': { title: '509-Harbourfront',  color: '#34d399' },
+  '510': { title: '510-Spadina',       color: '#ff0000' },
+  '511': { title: '511-Bathurst',      color: '#60a5fa' },
+  '512': { title: '512-St Clair',      color: '#f97316' },
 };
 
 const CONFLICT_ZONES: ConflictZone[] = [
@@ -38,8 +37,10 @@ const CONFLICT_ZONES: ConflictZone[] = [
   { id: 'zone_union',         name: 'Union Station Loop', lat: 43.6456, lon: -79.3800, radius: 200 },
 ];
 
-// State: { [routeTag]: RouteState }
 let systemState: Record<string, RouteState> = {};
+
+// Vehicle history per route — retained between polls for rate-of-change signals
+const vehicleHistory: Record<string, VehicleHistory> = {};
 
 function initRoutes(): void {
   systemState = {};
@@ -50,11 +51,12 @@ function initRoutes(): void {
       title: meta.title,
       color: meta.color,
       stops: [],
-      paths: [],  // Route geometry — to be populated from static GTFS
+      paths: [],
       vehicles: [],
-      metrics: { activeCount: 0, bunching: 0, slow: 0 },
+      metrics: { activeCount: 0, bunchingPairs: 0, closingPairs: 0, dwellAnomalies: 0, largeGaps: 0 },
       lastUpdated: null,
     };
+    vehicleHistory[tag] = new Map();
   }
   console.log(`[Init] Routes initialized: ${CONFIG.routes.join(', ')}`);
 }
@@ -69,7 +71,6 @@ async function poll(): Promise<void> {
       new Uint8Array(buffer)
     );
 
-    // Bucket vehicles by route
     const byRoute: Record<string, Vehicle[]> = {};
     for (const tag of CONFIG.routes) byRoute[tag] = [];
 
@@ -89,6 +90,10 @@ async function poll(): Promise<void> {
         heading: v.position.bearing ?? 0,
         dirTag: v.trip?.directionId?.toString() ?? '',
         isStalled: (v.position.speed ?? 0) === 0,
+        stopSequence: v.currentStopSequence ?? 0,
+        stopId: v.stopId ?? '',
+        currentStatus: v.currentStatus ?? 0,
+        reportedAt: v.timestamp?.low ?? 0,
       });
     }
 
@@ -99,18 +104,21 @@ async function poll(): Promise<void> {
       if (!systemState[tag]) continue;
       const vehicles = byRoute[tag];
 
+      const { metrics, updatedHistory } = analyzeRoute(vehicles, vehicleHistory[tag] ?? new Map());
+      vehicleHistory[tag] = updatedHistory;
+
       systemState[tag].vehicles = vehicles;
-      systemState[tag].metrics = {
-        activeCount: vehicles.length,
-        bunching: detectBunching(vehicles),
-        slow: vehicles.filter(v => v.speed > 0 && v.speed < 5).length,
-      };
+      systemState[tag].metrics = { activeCount: vehicles.length, ...metrics };
       systemState[tag].lastUpdated = now;
       totalVehicles += vehicles.length;
     }
 
     console.log(
-      `[Poll] ${new Date().toLocaleTimeString()} — ${totalVehicles} vehicles across ${CONFIG.routes.length} routes`
+      `[Poll] ${new Date().toLocaleTimeString()} — ${totalVehicles} vehicles | ` +
+      CONFIG.routes.map(t => {
+        const m = systemState[t]?.metrics;
+        return `${t}: ${m?.bunchingPairs}b ${m?.closingPairs}c ${m?.dwellAnomalies}d`;
+      }).join('  ')
     );
   } catch (err) {
     console.error('[Poll] Error:', (err as Error).message);
@@ -140,5 +148,4 @@ app.post('/api/config/active-routes', (req: Request, res: Response) => {
 
 app.listen(PORT, () => console.log(`Bridge running at http://localhost:${PORT}`));
 
-// Re-export for testing
 export { getDistance };

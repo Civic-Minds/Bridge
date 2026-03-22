@@ -1,5 +1,5 @@
-import { getDistance, detectBunching } from '../analysis';
-import { Vehicle } from '../types';
+import { getDistance, analyzeRoute } from '../analysis';
+import { Vehicle, VehicleHistory } from '../types';
 
 function makeVehicle(overrides: Partial<Vehicle>): Vehicle {
   return {
@@ -11,9 +11,19 @@ function makeVehicle(overrides: Partial<Vehicle>): Vehicle {
     heading: 90,
     dirTag: '0',
     isStalled: false,
+    stopSequence: 1,
+    stopId: 'stop_1',
+    currentStatus: 0,
+    reportedAt: Date.now() / 1000,
     ...overrides,
   };
 }
+
+const emptyHistory: VehicleHistory = new Map();
+
+// ---------------------------------------------------------------------------
+// getDistance
+// ---------------------------------------------------------------------------
 
 describe('getDistance', () => {
   it('returns ~0 for identical coordinates', () => {
@@ -34,34 +44,117 @@ describe('getDistance', () => {
   });
 });
 
-describe('detectBunching', () => {
-  it('returns 0 for an empty array', () => {
-    expect(detectBunching([])).toBe(0);
+// ---------------------------------------------------------------------------
+// analyzeRoute — bunching
+// ---------------------------------------------------------------------------
+
+describe('analyzeRoute — bunchingPairs', () => {
+  it('returns 0 for an empty vehicle list', () => {
+    const { metrics } = analyzeRoute([], emptyHistory);
+    expect(metrics.bunchingPairs).toBe(0);
   });
 
-  it('returns 1 when two vehicles are < 150m apart on the same dirTag', () => {
-    // ~50m apart (small lat offset)
-    const v1 = makeVehicle({ id: 'v1', lat: 43.6482, lon: -79.3962, dirTag: '0' });
-    const v2 = makeVehicle({ id: 'v2', lat: 43.6482 + 0.0004, lon: -79.3962, dirTag: '0' });
-    expect(detectBunching([v1, v2])).toBe(1);
+  it('flags a pair at gap ≤ 1 stop as bunching', () => {
+    const vehicles = [
+      makeVehicle({ id: 'v1', dirTag: '0', stopSequence: 5 }),
+      makeVehicle({ id: 'v2', dirTag: '0', stopSequence: 6 }), // gap = 1
+    ];
+    const { metrics } = analyzeRoute(vehicles, emptyHistory);
+    expect(metrics.bunchingPairs).toBe(1);
   });
 
-  it('returns 0 when two vehicles are > 150m apart on the same dirTag', () => {
-    // ~280m apart
-    const v1 = makeVehicle({ id: 'v1', lat: 43.6482, lon: -79.3962, dirTag: '0' });
-    const v2 = makeVehicle({ id: 'v2', lat: 43.6457, lon: -79.3952, dirTag: '0' });
-    expect(detectBunching([v1, v2])).toBe(0);
+  it('does not flag a pair with gap > 1 stop', () => {
+    const vehicles = [
+      makeVehicle({ id: 'v1', dirTag: '0', stopSequence: 3 }),
+      makeVehicle({ id: 'v2', dirTag: '0', stopSequence: 7 }), // gap = 4
+    ];
+    const { metrics } = analyzeRoute(vehicles, emptyHistory);
+    expect(metrics.bunchingPairs).toBe(0);
   });
 
-  it('returns 0 when two vehicles are < 150m apart but on different dirTags', () => {
-    const v1 = makeVehicle({ id: 'v1', lat: 43.6482, lon: -79.3962, dirTag: '0' });
-    const v2 = makeVehicle({ id: 'v2', lat: 43.6482 + 0.0004, lon: -79.3962, dirTag: '1' });
-    expect(detectBunching([v1, v2])).toBe(0);
+  it('does not flag vehicles in different directions', () => {
+    const vehicles = [
+      makeVehicle({ id: 'v1', dirTag: '0', stopSequence: 5 }),
+      makeVehicle({ id: 'v2', dirTag: '1', stopSequence: 6 }),
+    ];
+    const { metrics } = analyzeRoute(vehicles, emptyHistory);
+    expect(metrics.bunchingPairs).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// analyzeRoute — closing
+// ---------------------------------------------------------------------------
+
+describe('analyzeRoute — closingPairs', () => {
+  it('flags a pair whose gap shrank since the last poll', () => {
+    const vehicles = [
+      makeVehicle({ id: 'v1', dirTag: '0', stopSequence: 4 }),
+      makeVehicle({ id: 'v2', dirTag: '0', stopSequence: 7 }), // gap = 3
+    ];
+    // Previous poll had gap = 5 for v1
+    const history: VehicleHistory = new Map([
+      ['v1', { stopSequence: 2, stopId: 'stop_1', status: 0, dwellPolls: 0, gapAhead: 5 }],
+    ]);
+    const { metrics } = analyzeRoute(vehicles, history);
+    expect(metrics.closingPairs).toBe(1);
   });
 
-  it('returns 0 when vehicles have empty dirTags', () => {
-    const v1 = makeVehicle({ id: 'v1', lat: 43.6482, lon: -79.3962, dirTag: '' });
-    const v2 = makeVehicle({ id: 'v2', lat: 43.6482 + 0.0004, lon: -79.3962, dirTag: '' });
-    expect(detectBunching([v1, v2])).toBe(0);
+  it('does not flag a pair whose gap stayed the same', () => {
+    const vehicles = [
+      makeVehicle({ id: 'v1', dirTag: '0', stopSequence: 4 }),
+      makeVehicle({ id: 'v2', dirTag: '0', stopSequence: 7 }), // gap = 3
+    ];
+    const history: VehicleHistory = new Map([
+      ['v1', { stopSequence: 1, stopId: 'stop_1', status: 0, dwellPolls: 0, gapAhead: 3 }],
+    ]);
+    const { metrics } = analyzeRoute(vehicles, history);
+    expect(metrics.closingPairs).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// analyzeRoute — dwell anomalies
+// ---------------------------------------------------------------------------
+
+describe('analyzeRoute — dwellAnomalies', () => {
+  it('flags a vehicle stopped at the same stop for 3+ polls', () => {
+    const v = makeVehicle({ id: 'v1', dirTag: '0', stopId: 'stop_X', currentStatus: 2 });
+    const history: VehicleHistory = new Map([
+      ['v1', { stopSequence: 1, stopId: 'stop_X', status: 2, dwellPolls: 2, gapAhead: null }],
+    ]);
+    const { metrics } = analyzeRoute([v], history);
+    expect(metrics.dwellAnomalies).toBe(1);
+  });
+
+  it('does not flag a vehicle that just stopped this poll', () => {
+    const v = makeVehicle({ id: 'v1', dirTag: '0', stopId: 'stop_X', currentStatus: 2 });
+    const { metrics } = analyzeRoute([v], emptyHistory);
+    expect(metrics.dwellAnomalies).toBe(0);
+  });
+
+  it('resets dwell count when a vehicle moves to a new stop', () => {
+    const v = makeVehicle({ id: 'v1', dirTag: '0', stopId: 'stop_Y', currentStatus: 2 });
+    const history: VehicleHistory = new Map([
+      ['v1', { stopSequence: 1, stopId: 'stop_X', status: 2, dwellPolls: 5, gapAhead: null }],
+    ]);
+    const { metrics } = analyzeRoute([v], history);
+    expect(metrics.dwellAnomalies).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// analyzeRoute — history update
+// ---------------------------------------------------------------------------
+
+describe('analyzeRoute — updatedHistory', () => {
+  it('stores gapAhead for each vehicle', () => {
+    const vehicles = [
+      makeVehicle({ id: 'v1', dirTag: '0', stopSequence: 3 }),
+      makeVehicle({ id: 'v2', dirTag: '0', stopSequence: 8 }), // gap = 5
+    ];
+    const { updatedHistory } = analyzeRoute(vehicles, emptyHistory);
+    expect(updatedHistory.get('v1')?.gapAhead).toBe(5);
+    expect(updatedHistory.get('v2')?.gapAhead).toBeNull();
   });
 });
