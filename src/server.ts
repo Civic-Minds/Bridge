@@ -1,7 +1,7 @@
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import { analyzeRoute, buildPredictionIndex, generateRecommendations, generateCrossRouteRecommendations, getDistance } from './analysis';
-import { Vehicle, VehicleHistory, RouteState, ConflictZone, DispatchRecommendation } from './types';
+import { Vehicle, VehicleHistory, RouteState, ConflictZone, DispatchRecommendation, DispatchPolicy, DEFAULT_POLICY } from './types';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const GtfsRealtimeBindings = require('gtfs-realtime-bindings');
@@ -96,6 +96,9 @@ const TURNBACK_LOOPS: Record<string, TurnbackLoop[]> = {
 let systemState: Record<string, RouteState> = {};
 let systemRecommendations: Record<string, DispatchRecommendation[]> = {};
 const vehicleHistory: Record<string, VehicleHistory> = {};
+
+// Active dispatch policy — mutable at runtime via POST /api/policy
+let activePolicy: DispatchPolicy = { ...DEFAULT_POLICY };
 
 function initRoutes(): void {
   systemState = {};
@@ -233,14 +236,14 @@ async function poll(): Promise<void> {
       systemState[tag].lastUpdated = now;
       totalVehicles += vehicles.length;
 
-      // Generate single-route dispatch recommendations and enrich with loop data
-      const recs = generateRecommendations(tag, vehicles, POLL_INTERVAL_MS);
+      // Generate single-route dispatch recommendations, filtered by active policy
+      const recs = generateRecommendations(tag, vehicles, POLL_INTERVAL_MS, activePolicy);
       systemRecommendations[tag] = enrichWithLoopData(recs, vehicles, tag);
     }
 
     // Cross-route recommendations: local/express corridor substitutions.
     // Runs once after all per-route analysis is complete, using the full system state.
-    const crossRouteRecs = generateCrossRouteRecommendations(systemState);
+    const crossRouteRecs = generateCrossRouteRecommendations(systemState, undefined, undefined, activePolicy);
     // Store cross-route recs under a dedicated key so they don't collide with per-route recs
     systemRecommendations['_cross_route'] = crossRouteRecs;
 
@@ -316,6 +319,53 @@ app.get('/api/recommendations/:routeTag', (req: Request, res: Response) => {
     return;
   }
   res.json({ timestamp: Date.now(), routeTag, count: recs.length, recommendations: recs });
+});
+
+// Policy endpoints — read and update the active dispatch policy at runtime.
+// GET  /api/policy         — returns the current policy + available actions + notes
+// POST /api/policy         — replaces the active policy (full object required)
+// POST /api/policy/reset   — restores the default policy
+
+app.get('/api/policy', (_req: Request, res: Response) => {
+  res.json({
+    policy: activePolicy,
+    availableActions: ['HOLD', 'RELEASE_EARLY', 'SHORT_TURN', 'CONVERT_TO_LOCAL', 'CONVERT_TO_EXPRESS'],
+    severityLevels: ['MEDIUM', 'HIGH', 'CRITICAL'],
+    defaults: DEFAULT_POLICY,
+  });
+});
+
+app.post('/api/policy', (req: Request, res: Response) => {
+  const body = req.body as Partial<DispatchPolicy>;
+
+  // Validate required fields
+  if (body.enabledActions && !Array.isArray(body.enabledActions)) {
+    res.status(400).json({ error: 'enabledActions must be an array' });
+    return;
+  }
+  if (body.minimumSeverity && !['MEDIUM', 'HIGH', 'CRITICAL'].includes(body.minimumSeverity)) {
+    res.status(400).json({ error: 'minimumSeverity must be MEDIUM, HIGH, or CRITICAL' });
+    return;
+  }
+
+  // Merge with current policy (partial update)
+  activePolicy = {
+    ...activePolicy,
+    ...body,
+    // Always merge routeOverrides rather than replace, so a partial POST doesn't wipe all overrides
+    routeOverrides: { ...activePolicy.routeOverrides, ...(body.routeOverrides ?? {}) },
+    // Merge policyNotes: append new notes rather than replace
+    policyNotes: body.policyNotes ?? activePolicy.policyNotes,
+  };
+
+  console.log('[Policy] Updated:', JSON.stringify(activePolicy));
+  res.json({ success: true, policy: activePolicy });
+});
+
+app.post('/api/policy/reset', (_req: Request, res: Response) => {
+  activePolicy = { ...DEFAULT_POLICY };
+  console.log('[Policy] Reset to defaults');
+  res.json({ success: true, policy: activePolicy });
 });
 
 app.post('/api/config/active-routes', (req: Request, res: Response) => {

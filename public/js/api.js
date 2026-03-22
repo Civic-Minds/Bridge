@@ -22,6 +22,41 @@ export async function fetchRecommendations() {
     }
 }
 
+export async function fetchPolicy() {
+    try {
+        const res = await fetch('/api/policy');
+        if (!res.ok) throw new Error('Failed to fetch policy');
+        return await res.json();
+    } catch (e) {
+        console.error("Policy API Error:", e);
+        return null;
+    }
+}
+
+export async function updatePolicy(policy) {
+    try {
+        const res = await fetch('/api/policy', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(policy),
+        });
+        return await res.json();
+    } catch (e) {
+        console.error("Update Policy Error:", e);
+        return null;
+    }
+}
+
+export async function resetPolicy() {
+    try {
+        const res = await fetch('/api/policy/reset', { method: 'POST' });
+        return await res.json();
+    } catch (e) {
+        console.error("Reset Policy Error:", e);
+        return null;
+    }
+}
+
 export async function fetchAvailableRoutes() {
     try {
         const agency = 'ttc';

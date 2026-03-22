@@ -98,6 +98,54 @@ export interface DispatchRecommendation {
   generatedAt: number;               // unix ms
 }
 
+/**
+ * Agency dispatch policy — controls which recommendation types Bridge will generate.
+ *
+ * Design philosophy:
+ *   - Every constraint is EXPLICIT and NAMED. If an action type is disabled, a dispatcher
+ *     looking at the config can see exactly why it isn't appearing and who set the policy.
+ *   - Per-route overrides allow fine-grained control: maybe CONVERT_TO_LOCAL is allowed
+ *     on route 54 but not route 36 due to operator union rules or equipment constraints.
+ *   - Severity threshold gates low-priority noise without suppressing critical alerts.
+ *     An agency that finds MEDIUM recommendations distracting can raise the threshold.
+ *   - Nothing in this policy silently suppresses data. The raw anomaly data (/api/anomalies)
+ *     is always available regardless of policy. Policy only filters the *action* recommendations.
+ */
+export interface DispatchPolicy {
+  // Which action types are globally enabled. Remove an action type to disable it entirely.
+  enabledActions: RecommendationAction[];
+
+  // Minimum severity to surface a recommendation. 'MEDIUM' shows everything.
+  // Set to 'HIGH' to suppress informational suggestions; 'CRITICAL' for emergency-only.
+  minimumSeverity: RecommendationSeverity;
+
+  // Per-route action overrides. Key is routeTag.
+  // Example: { '36': { disabledActions: ['CONVERT_TO_LOCAL'] } }
+  routeOverrides: Record<string, {
+    disabledActions?: RecommendationAction[];
+    minimumSeverity?: RecommendationSeverity;
+  }>;
+
+  // If true, cross-route recommendations (CONVERT_TO_LOCAL / CONVERT_TO_EXPRESS)
+  // are globally disabled regardless of enabledActions. Useful for agencies that
+  // have strict route separation policies or union rules against service switching.
+  disableCrossRouteRecommendations: boolean;
+
+  // Free-text policy notes visible in the UI and API, e.g.:
+  // "CONVERT_TO_LOCAL disabled per operator contract clause 14.3 (Jan 2024)"
+  // This documents WHY a constraint exists, not just that it does.
+  policyNotes: string[];
+}
+
+// Default policy: everything enabled, no restrictions
+export const DEFAULT_POLICY: DispatchPolicy = {
+  enabledActions: ['HOLD', 'RELEASE_EARLY', 'SHORT_TURN', 'CONVERT_TO_LOCAL', 'CONVERT_TO_EXPRESS'],
+  minimumSeverity: 'MEDIUM',
+  routeOverrides: {},
+  disableCrossRouteRecommendations: false,
+  policyNotes: [],
+};
+
 // A local/express corridor pair on the same street
 export interface CorridorPair {
   id: string;

@@ -1,5 +1,5 @@
 import { getDistance, inferDirection, analyzeRoute, generateRecommendations, generateCrossRouteRecommendations } from '../analysis';
-import { Vehicle, VehicleHistory, PredictionIndex, VehicleWithAnalysis, RouteState, CorridorPair } from '../types';
+import { Vehicle, VehicleHistory, PredictionIndex, VehicleWithAnalysis, RouteState, CorridorPair, DispatchPolicy, DEFAULT_POLICY } from '../types';
 
 function makeVehicle(overrides: Partial<Vehicle>): Vehicle {
   return {
@@ -471,5 +471,91 @@ describe('generateCrossRouteRecommendations', () => {
     };
     const recs = generateCrossRouteRecommendations(state, [TEST_PAIR]);
     expect(recs.find(r => r.action === 'CONVERT_TO_LOCAL')).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Policy enforcement
+// ---------------------------------------------------------------------------
+
+describe('DispatchPolicy enforcement', () => {
+  const bunchingVehicles = [
+    makeAnalyzedVehicle('v1', 5, 160, ['bunching'], 1),
+    makeAnalyzedVehicle('v2', 6, 164, [], null),
+  ];
+
+  it('suppresses HOLD when HOLD is removed from enabledActions', () => {
+    const policy: DispatchPolicy = {
+      ...DEFAULT_POLICY,
+      enabledActions: ['RELEASE_EARLY', 'SHORT_TURN', 'CONVERT_TO_LOCAL', 'CONVERT_TO_EXPRESS'],
+    };
+    const recs = generateRecommendations('510', bunchingVehicles, 10000, policy);
+    expect(recs.find(r => r.action === 'HOLD')).toBeUndefined();
+  });
+
+  it('still generates HOLD when HOLD is in enabledActions', () => {
+    const recs = generateRecommendations('510', bunchingVehicles, 10000, DEFAULT_POLICY);
+    expect(recs.find(r => r.action === 'HOLD')).toBeDefined();
+  });
+
+  it('suppresses MEDIUM recommendations when minimumSeverity is HIGH', () => {
+    const gapVehicles = [
+      makeAnalyzedVehicle('v1', 3, 160, ['gap_ahead'], 10),
+      makeAnalyzedVehicle('v2', 13, 164, [], null),
+    ];
+    const policyHighOnly: DispatchPolicy = { ...DEFAULT_POLICY, minimumSeverity: 'HIGH' };
+    const recs = generateRecommendations('510', gapVehicles, 10000, policyHighOnly);
+    // RELEASE_EARLY is always MEDIUM — should be suppressed
+    expect(recs.find(r => r.action === 'RELEASE_EARLY')).toBeUndefined();
+  });
+
+  it('shows MEDIUM recommendations when minimumSeverity is MEDIUM (default)', () => {
+    const gapVehicles = [
+      makeAnalyzedVehicle('v1', 3, 160, ['gap_ahead'], 10),
+      makeAnalyzedVehicle('v2', 13, 164, [], null),
+    ];
+    const recs = generateRecommendations('510', gapVehicles, 10000, DEFAULT_POLICY);
+    expect(recs.find(r => r.action === 'RELEASE_EARLY')).toBeDefined();
+  });
+
+  it('suppresses per-route action via routeOverrides', () => {
+    const policy: DispatchPolicy = {
+      ...DEFAULT_POLICY,
+      routeOverrides: {
+        '510': { disabledActions: ['HOLD'] },
+      },
+    };
+    const recs = generateRecommendations('510', bunchingVehicles, 10000, policy);
+    expect(recs.find(r => r.action === 'HOLD')).toBeUndefined();
+  });
+
+  it('allows HOLD on other routes when per-route override only targets one route', () => {
+    const policy: DispatchPolicy = {
+      ...DEFAULT_POLICY,
+      routeOverrides: {
+        '510': { disabledActions: ['HOLD'] },
+      },
+    };
+    // Same vehicles but on route 504 — HOLD should still appear
+    const recs = generateRecommendations('504', bunchingVehicles, 10000, policy);
+    expect(recs.find(r => r.action === 'HOLD')).toBeDefined();
+  });
+
+  it('disableCrossRouteRecommendations suppresses all cross-route output', () => {
+    const gapLat = 43.6482, gapLon = -79.3962;
+    const localVehicles = [
+      makeAnalyzedVehicle('local1', 5,  160, ['gap_ahead'], 12, gapLat,          gapLon),
+      makeAnalyzedVehicle('local2', 17, 160, [],            null, gapLat + 0.01, gapLon),
+    ];
+    const expressVehicles = [
+      makeAnalyzedVehicle('exp1', 10, 160, [], null, gapLat + 0.0005, gapLon),
+    ];
+    const state = {
+      '54':  makeRouteState('54',  localVehicles),
+      '954': makeRouteState('954', expressVehicles),
+    };
+    const policy: DispatchPolicy = { ...DEFAULT_POLICY, disableCrossRouteRecommendations: true };
+    const recs = generateCrossRouteRecommendations(state, [TEST_PAIR], 45, policy);
+    expect(recs).toEqual([]);
   });
 });

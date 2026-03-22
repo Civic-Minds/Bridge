@@ -479,12 +479,47 @@
     </main>
 
     <div id="settings-overlay">
-        <div class="settings-box">
-            <h3>Configuration</h3>
-            <p style="font-size:0.85rem; color:var(--text-dim); margin-bottom:1rem;">Enter route tags separated by comma</p>
-            <input id="routes-input" type="text" placeholder="510, 504, 501">
-            <div style="display:flex; gap:10px; margin-top:1rem;">
-                <button class="btn-primary" onclick="saveConfig()">Update Network</button>
+        <div class="settings-box" style="max-width:520px; max-height:90vh; overflow-y:auto;">
+            <h3 style="margin-bottom:1.25rem;">Configuration</h3>
+
+            <!-- Routes -->
+            <div style="margin-bottom:1.5rem;">
+                <div class="section-title">Monitored Routes</div>
+                <p style="font-size:0.82rem; color:var(--text-dim); margin-bottom:0.5rem;">Enter route tags separated by comma</p>
+                <input id="routes-input" type="text" placeholder="510, 504, 501">
+            </div>
+
+            <!-- Dispatch Policy -->
+            <div style="margin-bottom:1.5rem; border-top:1px solid var(--card-border); padding-top:1.25rem;">
+                <div class="section-title">Dispatch Policy</div>
+                <p style="font-size:0.82rem; color:var(--text-dim); margin-bottom:0.75rem;">
+                    Controls which action types Bridge will suggest. Disable any action to prevent it
+                    from appearing in the Dispatch panel, regardless of algorithm output.
+                </p>
+
+                <div style="display:flex; flex-direction:column; gap:0.5rem; margin-bottom:1rem;" id="policy-actions">
+                    <!-- Populated by JS -->
+                </div>
+
+                <label style="font-size:0.8rem; color:var(--text-dim); display:block; margin-bottom:0.4rem;">Minimum severity to surface</label>
+                <select id="policy-min-severity" style="background:var(--bg); border:1px solid var(--card-border); color:var(--text); padding:8px; border-radius:4px; width:100%; font-size:0.85rem;">
+                    <option value="MEDIUM">Medium — show all suggestions</option>
+                    <option value="HIGH">High — suppress informational suggestions</option>
+                    <option value="CRITICAL">Critical — emergency alerts only</option>
+                </select>
+
+                <label style="font-size:0.8rem; color:var(--text-dim); display:block; margin:0.75rem 0 0.4rem;">
+                    <input type="checkbox" id="policy-disable-cross-route" style="width:auto; margin:0 6px 0 0;">
+                    Disable all cross-route recommendations (local/express conversions)
+                </label>
+
+                <label style="font-size:0.8rem; color:var(--text-dim); display:block; margin-bottom:0.4rem; margin-top:0.75rem;">Policy note (optional — document why)</label>
+                <input id="policy-note" type="text" placeholder="e.g. CONVERT_TO_LOCAL disabled per union contract clause 14.3">
+            </div>
+
+            <div style="display:flex; gap:10px; margin-top:1rem; flex-wrap:wrap;">
+                <button class="btn-primary" onclick="saveConfig()">Save</button>
+                <button class="btn-ghost" onclick="resetPolicy()" style="font-size:0.82rem;">Reset Policy</button>
                 <button class="btn-ghost" onclick="toggleSettings(false)">Cancel</button>
             </div>
         </div>
@@ -495,7 +530,78 @@
         import { initMap, updateMapState, startAnimationLoop } from './js/map.js';
         import { initUI, updateDashboard }                     from './js/ui.js';
         import { initLadder, renderLadder, renderRecommendations } from './js/ladder.js';
-        import { fetchState, fetchRecommendations }            from './js/api.js';
+        import { fetchState, fetchRecommendations, fetchPolicy, updatePolicy, resetPolicy as apiResetPolicy } from './js/api.js';
+
+        const ACTION_LABELS = {
+            'HOLD':               'Hold vehicle at stop',
+            'RELEASE_EARLY':      'Release early from terminal',
+            'SHORT_TURN':         'Short-turn vehicle',
+            'CONVERT_TO_LOCAL':   'Convert express → local',
+            'CONVERT_TO_EXPRESS': 'Convert local → express',
+        };
+
+        // Populate and load the policy UI when settings opens
+        window._origToggleSettings = window.toggleSettings;
+        window.toggleSettings = async function(show) {
+            window._origToggleSettings?.(show);
+            if (!show) return;
+            const data = await fetchPolicy();
+            if (!data?.policy) return;
+            const policy = data.policy;
+
+            // Render action checkboxes
+            const container = document.getElementById('policy-actions');
+            container.innerHTML = (data.availableActions ?? []).map(action => `
+                <label style="font-size:0.82rem; color:var(--text); display:flex; align-items:center; gap:8px; cursor:pointer;">
+                    <input type="checkbox" data-action="${action}"
+                        ${policy.enabledActions.includes(action) ? 'checked' : ''}
+                        style="width:auto; margin:0; accent-color:var(--accent);">
+                    <span>${ACTION_LABELS[action] ?? action}</span>
+                </label>
+            `).join('');
+
+            document.getElementById('policy-min-severity').value = policy.minimumSeverity ?? 'MEDIUM';
+            document.getElementById('policy-disable-cross-route').checked = !!policy.disableCrossRouteRecommendations;
+            document.getElementById('policy-note').value = '';
+        };
+
+        window.saveConfig = async function() {
+            // Save routes
+            const routeInput = document.getElementById('routes-input').value;
+            const routes = routeInput.split(',').map(s => s.trim()).filter(s => s);
+            if (routes.length > 0) {
+                await fetch('/api/config/active-routes', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ routes }),
+                });
+            }
+
+            // Save policy
+            const enabledActions = Array.from(
+                document.querySelectorAll('#policy-actions input[type=checkbox]:checked')
+            ).map(el => el.dataset.action);
+            const minimumSeverity = document.getElementById('policy-min-severity').value;
+            const disableCrossRoute = document.getElementById('policy-disable-cross-route').checked;
+            const noteText = document.getElementById('policy-note').value.trim();
+
+            const policyUpdate = {
+                enabledActions,
+                minimumSeverity,
+                disableCrossRouteRecommendations: disableCrossRoute,
+                ...(noteText ? { policyNotes: [noteText] } : {}),
+            };
+            await updatePolicy(policyUpdate);
+
+            window.toggleSettings(false);
+            window.location.reload();
+        };
+
+        window.resetPolicy = async function() {
+            await apiResetPolicy();
+            window.toggleSettings(false);
+            window.location.reload();
+        };
 
         // Tab switching
         window.switchTab = function(name) {

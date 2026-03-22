@@ -8,9 +8,40 @@ import {
   PredictionIndex,
   DispatchRecommendation,
   RecommendationSeverity,
+  RecommendationAction,
   CorridorPair,
   RouteState,
+  DispatchPolicy,
+  DEFAULT_POLICY,
 } from './types';
+
+const SEVERITY_ORDER: Record<RecommendationSeverity, number> = { CRITICAL: 0, HIGH: 1, MEDIUM: 2 };
+
+/**
+ * Returns true if the recommendation passes all policy gates.
+ * Called before adding any recommendation to the output array.
+ */
+function allowedByPolicy(
+  action: RecommendationAction,
+  severity: RecommendationSeverity,
+  routeTag: string,
+  policy: DispatchPolicy,
+): boolean {
+  // Global action gate
+  if (!policy.enabledActions.includes(action)) return false;
+
+  // Global severity gate
+  if (SEVERITY_ORDER[severity] > SEVERITY_ORDER[policy.minimumSeverity]) return false;
+
+  // Per-route overrides
+  const override = policy.routeOverrides[routeTag];
+  if (override) {
+    if (override.disabledActions?.includes(action)) return false;
+    if (override.minimumSeverity && SEVERITY_ORDER[severity] > SEVERITY_ORDER[override.minimumSeverity]) return false;
+  }
+
+  return true;
+}
 
 export function getDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6371e3;
@@ -198,6 +229,7 @@ export function generateRecommendations(
   routeTag: string,
   vehicles: VehicleWithAnalysis[],
   pollIntervalMs: number = 10000,
+  policy: DispatchPolicy = DEFAULT_POLICY,
 ): DispatchRecommendation[] {
   const recommendations: DispatchRecommendation[] = [];
   const now = Date.now();
@@ -253,21 +285,23 @@ export function generateRecommendations(
           ? ` (${behind.analysis.scheduleDeviation > 0 ? '+' : ''}${Math.round(behind.analysis.scheduleDeviation)}s vs schedule)`
           : '';
 
-        recommendations.push({
-          id: `${routeTag}-${behind.id}-HOLD`,
-          routeTag,
-          vehicleId: behind.id,
-          action: 'HOLD',
-          severity,
-          holdSeconds: holdSeconds > 0 ? holdSeconds : null,
-          atStop: behind.stopId,
-          reason: isBunching
-            ? `Vehicle ${behind.id} is bunched with ${ahead.id} (${gap} stop gap)${deviationStr}. Hold to restore ${Math.round(avgGap)}-stop headway.`
-            : `Vehicle ${behind.id} closing on ${ahead.id}: gap ${gap} stops and shrinking${deviationStr}. Hold ${holdSeconds}s to prevent bunch.`,
-          estimatedSecondsToBunch: isBunching ? 0 : secondsToBunch,
-          headwayAfterAction: Math.round(avgGap),
-          generatedAt: now,
-        });
+        if (allowedByPolicy('HOLD', severity, routeTag, policy)) {
+          recommendations.push({
+            id: `${routeTag}-${behind.id}-HOLD`,
+            routeTag,
+            vehicleId: behind.id,
+            action: 'HOLD',
+            severity,
+            holdSeconds: holdSeconds > 0 ? holdSeconds : null,
+            atStop: behind.stopId,
+            reason: isBunching
+              ? `Vehicle ${behind.id} is bunched with ${ahead.id} (${gap} stop gap)${deviationStr}. Hold to restore ${Math.round(avgGap)}-stop headway.`
+              : `Vehicle ${behind.id} closing on ${ahead.id}: gap ${gap} stops and shrinking${deviationStr}. Hold ${holdSeconds}s to prevent bunch.`,
+            estimatedSecondsToBunch: isBunching ? 0 : secondsToBunch,
+            headwayAfterAction: Math.round(avgGap),
+            generatedAt: now,
+          });
+        }
       }
 
       // Large gap: vehicle ahead of this gap should be released early from terminal,
@@ -279,41 +313,43 @@ export function generateRecommendations(
         // If the vehicle behind is late, recommend short-turn
         const isLate = behind.analysis.anomalies.includes('late');
         if (isLate && behind.analysis.scheduleDeviation !== null && behind.analysis.scheduleDeviation > 180) {
-          recommendations.push({
-            id: `${routeTag}-${behind.id}-SHORT_TURN`,
-            routeTag,
-            vehicleId: behind.id,
-            action: 'SHORT_TURN',
-            severity: 'HIGH',
-            holdSeconds: null,
-            atStop: behind.stopId,
-            reason: `Vehicle ${behind.id} is ${Math.round(behind.analysis.scheduleDeviation)}s late AND a ${gapStops}-stop gap exists ahead. Short-turn here to fill the gap behind rather than compounding delay at end terminal.`,
-            estimatedSecondsToBunch: null,
-            headwayAfterAction: Math.round(gapStops / 2),
-            generatedAt: now,
-          });
+          if (allowedByPolicy('SHORT_TURN', 'HIGH', routeTag, policy)) {
+            recommendations.push({
+              id: `${routeTag}-${behind.id}-SHORT_TURN`,
+              routeTag,
+              vehicleId: behind.id,
+              action: 'SHORT_TURN',
+              severity: 'HIGH',
+              holdSeconds: null,
+              atStop: behind.stopId,
+              reason: `Vehicle ${behind.id} is ${Math.round(behind.analysis.scheduleDeviation)}s late AND a ${gapStops}-stop gap exists ahead. Short-turn here to fill the gap behind rather than compounding delay at end terminal.`,
+              estimatedSecondsToBunch: null,
+              headwayAfterAction: Math.round(gapStops / 2),
+              generatedAt: now,
+            });
+          }
         } else {
-          recommendations.push({
-            id: `${routeTag}-${behind.id}-RELEASE_EARLY`,
-            routeTag,
-            vehicleId: behind.id,
-            action: 'RELEASE_EARLY',
-            severity: 'MEDIUM',
-            holdSeconds: null,
-            atStop: behind.stopId,
-            reason: `${gapStops}-stop gap (≈${Math.round(gapSeconds / 60)} min wait for riders) ahead of vehicle ${behind.id}. If a spare is available at terminal, release early to fill gap.`,
-            estimatedSecondsToBunch: null,
-            headwayAfterAction: Math.round(gapStops / 2),
-            generatedAt: now,
-          });
+          if (allowedByPolicy('RELEASE_EARLY', 'MEDIUM', routeTag, policy)) {
+            recommendations.push({
+              id: `${routeTag}-${behind.id}-RELEASE_EARLY`,
+              routeTag,
+              vehicleId: behind.id,
+              action: 'RELEASE_EARLY',
+              severity: 'MEDIUM',
+              holdSeconds: null,
+              atStop: behind.stopId,
+              reason: `${gapStops}-stop gap (≈${Math.round(gapSeconds / 60)} min wait for riders) ahead of vehicle ${behind.id}. If a spare is available at terminal, release early to fill gap.`,
+              estimatedSecondsToBunch: null,
+              headwayAfterAction: Math.round(gapStops / 2),
+              generatedAt: now,
+            });
+          }
         }
       }
     }
   }
 
-  // Sort: CRITICAL first, then HIGH, then MEDIUM
-  const order: Record<RecommendationSeverity, number> = { CRITICAL: 0, HIGH: 1, MEDIUM: 2 };
-  recommendations.sort((a, b) => order[a.severity] - order[b.severity]);
+  recommendations.sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
 
   return recommendations;
 }
@@ -370,7 +406,11 @@ export function generateCrossRouteRecommendations(
   allRouteStates: Record<string, RouteState>,
   corridorPairs: CorridorPair[] = TTC_CORRIDOR_PAIRS,
   secondsPerStop = 45,
+  policy: DispatchPolicy = DEFAULT_POLICY,
 ): DispatchRecommendation[] {
+  // Short-circuit if the agency has disabled cross-route recommendations entirely
+  if (policy.disableCrossRouteRecommendations) return [];
+
   const recommendations: DispatchRecommendation[] = [];
   const now = Date.now();
 
@@ -430,25 +470,28 @@ export function generateCrossRouteRecommendations(
       // Only recommend if the rider benefit clearly outweighs the express cost
       if (newLocalHeadwayMin >= gapMinutes) continue;
 
-      recommendations.push({
-        id: `${pair.localRouteTag}-${candidate.id}-CONVERT_TO_LOCAL`,
-        routeTag: pair.expressRouteTag,
-        partnerRouteTag: pair.localRouteTag,
-        vehicleId: candidate.id,
-        action: 'CONVERT_TO_LOCAL',
-        severity: gapMinutes >= 15 ? 'HIGH' : 'MEDIUM',
-        holdSeconds: null,
-        atStop: candidate.stopId,
-        reason:
-          `${pair.name} corridor — ${pair.localRouteTag}-local has a ${gapStops}-stop gap ` +
-          `(≈${gapMinutes} min rider wait). Express vehicle ${candidate.id} is positioned ` +
-          `inside this gap. Converting to local service for this trip would serve the missed stops, ` +
-          `reducing local wait from ${gapMinutes} min to ≈${newLocalHeadwayMin} min. ` +
-          `Express headway impact: +${expressImpactMin} min on ${pair.expressRouteTag}.`,
-        estimatedSecondsToBunch: null,
-        headwayAfterAction: newLocalHeadwayMin,
-        generatedAt: now,
-      });
+      const convertToLocalSeverity: RecommendationSeverity = gapMinutes >= 15 ? 'HIGH' : 'MEDIUM';
+      if (allowedByPolicy('CONVERT_TO_LOCAL', convertToLocalSeverity, pair.expressRouteTag, policy)) {
+        recommendations.push({
+          id: `${pair.localRouteTag}-${candidate.id}-CONVERT_TO_LOCAL`,
+          routeTag: pair.expressRouteTag,
+          partnerRouteTag: pair.localRouteTag,
+          vehicleId: candidate.id,
+          action: 'CONVERT_TO_LOCAL',
+          severity: convertToLocalSeverity,
+          holdSeconds: null,
+          atStop: candidate.stopId,
+          reason:
+            `${pair.name} corridor — ${pair.localRouteTag}-local has a ${gapStops}-stop gap ` +
+            `(≈${gapMinutes} min rider wait). Express vehicle ${candidate.id} is positioned ` +
+            `inside this gap. Converting to local service for this trip would serve the missed stops, ` +
+            `reducing local wait from ${gapMinutes} min to ≈${newLocalHeadwayMin} min. ` +
+            `Express headway impact: +${expressImpactMin} min on ${pair.expressRouteTag}.`,
+          estimatedSecondsToBunch: null,
+          headwayAfterAction: newLocalHeadwayMin,
+          generatedAt: now,
+        });
+      }
     }
 
     // ── 2. CONVERT_TO_EXPRESS ──────────────────────────────────────────────
@@ -476,31 +519,31 @@ export function generateCrossRouteRecommendations(
       const timesSaved   = Math.round(stopsSkipped * secondsPerStop);
       const gapFillStops = Math.round(stopsSkipped * 0.7); // rough gap fill estimate
 
-      recommendations.push({
-        id: `${pair.localRouteTag}-${rearVehicle.id}-CONVERT_TO_EXPRESS`,
-        routeTag: pair.localRouteTag,
-        partnerRouteTag: pair.expressRouteTag,
-        vehicleId: rearVehicle.id,
-        action: 'CONVERT_TO_EXPRESS',
-        severity: 'MEDIUM',
-        holdSeconds: null,
-        atStop: rearVehicle.stopId,
-        reason:
-          `${pair.name} corridor — ${pair.localRouteTag}-local is bunched (${bunchedLocalVehicles.length} vehicles ` +
-          `close together) AND has a gap ahead. Vehicle ${rearVehicle.id} at the rear of the bunch ` +
-          `can run express on ${pair.expressRouteTag} pattern, skipping ~${stopsSkipped} stops, ` +
-          `pulling ≈${Math.round(timesSaved / 60)} min ahead of the bunch and filling the gap. ` +
-          `Remaining local vehicles maintain local service. Announce skip stops to passengers onboard.`,
-        estimatedSecondsToBunch: null,
-        headwayAfterAction: gapFillStops,
-        generatedAt: now,
-      });
+      if (allowedByPolicy('CONVERT_TO_EXPRESS', 'MEDIUM', pair.localRouteTag, policy)) {
+        recommendations.push({
+          id: `${pair.localRouteTag}-${rearVehicle.id}-CONVERT_TO_EXPRESS`,
+          routeTag: pair.localRouteTag,
+          partnerRouteTag: pair.expressRouteTag,
+          vehicleId: rearVehicle.id,
+          action: 'CONVERT_TO_EXPRESS',
+          severity: 'MEDIUM',
+          holdSeconds: null,
+          atStop: rearVehicle.stopId,
+          reason:
+            `${pair.name} corridor — ${pair.localRouteTag}-local is bunched (${bunchedLocalVehicles.length} vehicles ` +
+            `close together) AND has a gap ahead. Vehicle ${rearVehicle.id} at the rear of the bunch ` +
+            `can run express on ${pair.expressRouteTag} pattern, skipping ~${stopsSkipped} stops, ` +
+            `pulling ≈${Math.round(timesSaved / 60)} min ahead of the bunch and filling the gap. ` +
+            `Remaining local vehicles maintain local service. Announce skip stops to passengers onboard.`,
+          estimatedSecondsToBunch: null,
+          headwayAfterAction: gapFillStops,
+          generatedAt: now,
+        });
+      }
     }
   }
 
-  // Sort by severity
-  const order: Record<RecommendationSeverity, number> = { CRITICAL: 0, HIGH: 1, MEDIUM: 2 };
-  recommendations.sort((a, b) => order[a.severity] - order[b.severity]);
+  recommendations.sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
 
   return recommendations;
 }
