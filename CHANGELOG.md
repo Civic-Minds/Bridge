@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+---
+
+## [1.6.0] - 2026-03-22
+
 ### Added
 - **Outbound webhook** — `POST /api/webhook` configures a URL Bridge will POST to on every approved HOLD/SHORT_TURN. Payload: `{ schemaVersion, type, recommendationId, vehicleId, routeTag, action, holdSeconds, atStop, severity, reason, issuedAt, expiresAt, bridgeInstanceId }`. Optional HMAC-SHA256 signing via `X-Bridge-Signature` header. Fire-and-forget — never delays the approval response. `GET /api/webhook` returns config; `DELETE /api/webhook` disables.
 - **Trends tab** — new 5th sidebar tab with a 24-hour anomaly frequency chart. One horizontal bar row per hour; segments coloured by anomaly type (bunching=red, closing=orange, dwell=amber, gap=blue, schedule=purple), width proportional to event count. Route filter and refresh button. Empty state when the DB has no events yet.
@@ -16,6 +20,7 @@ All notable changes to this project will be documented in this file.
 ### Changed
 - **All `console.*` calls in `src/gtfs.ts` replaced** with structured `log.*` (JSON lines) matching the rest of the codebase.
 - **`instructionStatus` field** added to `DispatchRecommendation` type — `'monitoring' | 'complied' | 'non_complied' | 'expired'` — populated by `applyDecisions()` when an instruction exists for the rec.
+- **`src/server.ts` refactored** into four focused modules — `src/config.ts` (static TTC data), `src/state.ts` (shared `appState` container + constants), `src/poller.ts` (poll loop, analysis, SSE, boot), `src/server.ts` (Express routes + listen). No behaviour changes; all 41 tests pass.
 
 ---
 
