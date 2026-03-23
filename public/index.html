@@ -672,6 +672,25 @@
                 <input id="policy-note" type="text" placeholder="e.g. CONVERT_TO_LOCAL disabled per union contract clause 14.3">
             </div>
 
+            <!-- Outbound Webhook -->
+            <div style="margin-bottom:1.5rem; border-top:1px solid var(--card-border); padding-top:1.25rem;">
+                <div class="section-title">Outbound Webhook</div>
+                <p style="font-size:0.82rem; color:var(--text-dim); margin-bottom:0.75rem;">
+                    Bridge will POST a signed instruction payload to this URL whenever a dispatcher
+                    approves a HOLD or SHORT_TURN. Connect to your MDT, driver app, or CAD system.
+                </p>
+                <label style="font-size:0.8rem; color:var(--text-dim); display:block; margin-bottom:0.4rem;">Endpoint URL</label>
+                <input id="webhook-url" type="url" placeholder="https://your-system.example.com/bridge/instructions">
+                <label style="font-size:0.8rem; color:var(--text-dim); display:block; margin:0.75rem 0 0.4rem;">
+                    HMAC secret <span style="font-weight:400;">(optional — used to sign X-Bridge-Signature header)</span>
+                </label>
+                <input id="webhook-secret" type="password" placeholder="Leave blank to keep existing secret">
+                <div id="webhook-status" style="font-size:0.75rem; margin-top:0.5rem; color:var(--text-dim);"></div>
+                <button class="btn-ghost" onclick="clearWebhook()" style="font-size:0.78rem; margin-top:0.5rem;">
+                    Disable webhook
+                </button>
+            </div>
+
             <div style="display:flex; gap:10px; margin-top:1rem; flex-wrap:wrap;">
                 <button class="btn-primary" onclick="saveConfig()">Save</button>
                 <button class="btn-ghost" onclick="resetPolicy()" style="font-size:0.82rem;">Reset Policy</button>
@@ -685,7 +704,8 @@
         import { initMap, updateMapState, startAnimationLoop } from './js/map.js';
         import { initUI, updateDashboard }                     from './js/ui.js';
         import { initLadder, renderLadder, renderRecommendations, setDecisionCallback } from './js/ladder.js';
-        import { fetchState, fetchRecommendations, fetchPolicy, updatePolicy, resetPolicy as apiResetPolicy } from './js/api.js';
+        import { fetchState, fetchRecommendations, fetchPolicy, updatePolicy, resetPolicy as apiResetPolicy,
+                 fetchWebhook, saveWebhook, deleteWebhook } from './js/api.js';
 
         const ACTION_LABELS = {
             'HOLD':               'Hold vehicle at stop',
@@ -718,6 +738,14 @@
             document.getElementById('policy-min-severity').value = policy.minimumSeverity ?? 'MEDIUM';
             document.getElementById('policy-disable-cross-route').checked = !!policy.disableCrossRouteRecommendations;
             document.getElementById('policy-note').value = '';
+
+            // Load current webhook config
+            const wh = await fetchWebhook();
+            document.getElementById('webhook-url').value = wh?.url ?? '';
+            document.getElementById('webhook-secret').value = '';
+            document.getElementById('webhook-status').textContent = wh?.configured
+                ? `Configured${wh.hasSecret ? ' · signed' : ' · unsigned'}`
+                : 'Not configured';
         };
 
         window.saveConfig = async function() {
@@ -748,6 +776,11 @@
             };
             await updatePolicy(policyUpdate);
 
+            // Save webhook if a URL is entered
+            const webhookUrl    = document.getElementById('webhook-url').value.trim();
+            const webhookSecret = document.getElementById('webhook-secret').value.trim();
+            if (webhookUrl) await saveWebhook(webhookUrl, webhookSecret || undefined);
+
             window.toggleSettings(false);
             window.location.reload();
         };
@@ -756,6 +789,13 @@
             await apiResetPolicy();
             window.toggleSettings(false);
             window.location.reload();
+        };
+
+        window.clearWebhook = async function() {
+            await deleteWebhook();
+            document.getElementById('webhook-url').value = '';
+            document.getElementById('webhook-secret').value = '';
+            document.getElementById('webhook-status').textContent = 'Not configured';
         };
 
         // ─── Trends chart ────────────────────────────────────────────────────────

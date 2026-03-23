@@ -81,6 +81,41 @@ export async function dismissRecommendation(id, reason = '') {
     }
 }
 
+export async function fetchWebhook() {
+    try {
+        const res = await fetch('/api/webhook');
+        if (!res.ok) throw new Error('Failed to fetch webhook config');
+        return await res.json();
+    } catch (e) {
+        console.error('Webhook fetch error:', e);
+        return null;
+    }
+}
+
+export async function saveWebhook(url, secret) {
+    try {
+        const res = await fetch('/api/webhook', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url, ...(secret ? { secret } : {}) }),
+        });
+        return await res.json();
+    } catch (e) {
+        console.error('Webhook save error:', e);
+        return null;
+    }
+}
+
+export async function deleteWebhook() {
+    try {
+        const res = await fetch('/api/webhook', { method: 'DELETE' });
+        return await res.json();
+    } catch (e) {
+        console.error('Webhook delete error:', e);
+        return null;
+    }
+}
+
 export async function fetchAvailableRoutes() {
     try {
         const agency = 'ttc';
