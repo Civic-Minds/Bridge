@@ -356,6 +356,87 @@
         .rec-instr-noncomplied { background: rgba(239,68,68,0.2);    color: #ef4444; }
         .rec-instr-expired     { background: rgba(100,116,139,0.2);  color: #64748b; }
 
+        /* ─── Trends chart ─── */
+        .trends-controls {
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+            margin-bottom: 0.75rem;
+        }
+        .trends-controls select {
+            flex: 1;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.78rem;
+        }
+        .trends-refresh-btn {
+            background: none;
+            border: 1px solid var(--border);
+            color: var(--text-dim);
+            padding: 4px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.78rem;
+        }
+        .trends-refresh-btn:hover { color: var(--text); }
+        #trends-chart { overflow-y: auto; max-height: calc(100vh - 320px); }
+        .trend-hour-row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 4px;
+            font-size: 0.7rem;
+        }
+        .trend-hour-label {
+            width: 38px;
+            text-align: right;
+            color: var(--text-dim);
+            flex-shrink: 0;
+            font-variant-numeric: tabular-nums;
+        }
+        .trend-bar-track {
+            flex: 1;
+            display: flex;
+            gap: 1px;
+            height: 14px;
+            background: rgba(255,255,255,0.03);
+            border-radius: 2px;
+            overflow: hidden;
+        }
+        .trend-bar-seg {
+            height: 100%;
+            border-radius: 1px;
+            transition: width 0.2s;
+            cursor: default;
+        }
+        .trend-total {
+            width: 24px;
+            text-align: right;
+            color: var(--text-dim);
+            flex-shrink: 0;
+            font-variant-numeric: tabular-nums;
+        }
+        .trends-legend {
+            display: flex;
+            gap: 0.6rem;
+            flex-wrap: wrap;
+            margin-top: 0.75rem;
+            font-size: 0.68rem;
+            color: var(--text-dim);
+            align-items: center;
+        }
+        .legend-dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 2px;
+            margin-right: 2px;
+        }
+        .trends-empty { color: var(--text-dim); font-size: 0.8rem; padding: 1rem 0; text-align: center; }
+
         .rec-actions {
             display: flex;
             gap: 6px;
@@ -485,6 +566,7 @@
             <button class="tab-btn" id="tab-ladder" onclick="switchTab('ladder')">Ladder</button>
             <button class="tab-btn" id="tab-routes" onclick="switchTab('routes')">Routes</button>
             <button class="tab-btn" id="tab-feed" onclick="switchTab('feed')">Feed</button>
+            <button class="tab-btn" id="tab-trends" onclick="switchTab('trends')">Trends</button>
         </div>
 
         <div class="sidebar-content">
@@ -516,6 +598,30 @@
                 <div class="section-title" style="margin-top:0.25rem;">Incident Feed</div>
                 <div class="log-container" id="incident-log">
                     <div class="log-item dim">Initializing Network...</div>
+                </div>
+            </div>
+
+            <!-- Trends tab: 24-hour anomaly frequency chart -->
+            <div class="tab-panel" id="panel-trends">
+                <div class="section-title" style="margin-top:0.25rem;">24-Hour Trends</div>
+                <div class="trends-controls">
+                    <select id="trends-route-filter" onchange="loadTrends()">
+                        <option value="">All Routes</option>
+                        <option value="510">510 Spadina</option>
+                        <option value="504">504 King</option>
+                        <option value="501">501 Queen</option>
+                    </select>
+                    <button class="trends-refresh-btn" onclick="loadTrends()">↻ Refresh</button>
+                </div>
+                <div id="trends-chart">
+                    <div class="rec-empty">Select the Trends tab to load data.</div>
+                </div>
+                <div class="trends-legend">
+                    <span class="legend-dot" style="background:#ef4444"></span>bunching
+                    <span class="legend-dot" style="background:#f97316"></span>closing
+                    <span class="legend-dot" style="background:#fbbf24"></span>dwell
+                    <span class="legend-dot" style="background:#60a5fa"></span>gap
+                    <span class="legend-dot" style="background:#a78bfa"></span>schedule
                 </div>
             </div>
 
@@ -652,12 +758,93 @@
             window.location.reload();
         };
 
+        // ─── Trends chart ────────────────────────────────────────────────────────
+
+        const ANOMALY_COLORS = {
+            bunching:  '#ef4444',
+            closing:   '#f97316',
+            dwell:     '#fbbf24',
+            gap_ahead: '#60a5fa',
+            early:     '#a78bfa',
+            late:      '#a78bfa',
+        };
+
+        function anomalyColor(type) {
+            return ANOMALY_COLORS[type] || '#94a3b8';
+        }
+
+        window.loadTrends = async function() {
+            const route = document.getElementById('trends-route-filter').value;
+            const end = Date.now();
+            const start = end - 24 * 60 * 60 * 1000;
+            const params = new URLSearchParams({ start, end, groupBy: 'hour' });
+            if (route) params.set('route', route);
+
+            try {
+                const res = await fetch(`/api/history?${params}`);
+                const data = await res.json();
+                renderTrendsChart(data.history ?? [], start, end);
+            } catch (e) {
+                document.getElementById('trends-chart').innerHTML =
+                    '<div class="trends-empty">Failed to load trend data.</div>';
+            }
+        };
+
+        function renderTrendsChart(rows, startMs, endMs) {
+            const chart = document.getElementById('trends-chart');
+
+            // Build a map: hourBucket → { anomalyType → count }
+            const hourMap = new Map();
+            for (const row of rows) {
+                if (!hourMap.has(row.hourBucket)) hourMap.set(row.hourBucket, {});
+                hourMap.get(row.hourBucket)[row.anomalyType] =
+                    (hourMap.get(row.hourBucket)[row.anomalyType] || 0) + row.eventCount;
+            }
+
+            // Fill all 24 hours even if empty
+            const hours = [];
+            const bucketStart = Math.floor(startMs / 3600000) * 3600000;
+            for (let h = bucketStart; h < endMs; h += 3600000) hours.push(h);
+
+            if (hourMap.size === 0) {
+                chart.innerHTML = '<div class="trends-empty">No anomaly events recorded in this window.<br>Data accumulates as Bridge monitors routes.</div>';
+                return;
+            }
+
+            // Max total across all hours for bar scaling
+            const maxTotal = Math.max(1, ...hours.map(h => {
+                const b = hourMap.get(h) || {};
+                return Object.values(b).reduce((s, v) => s + v, 0);
+            }));
+
+            const rows24 = hours.map(h => {
+                const bucket = hourMap.get(h) || {};
+                const total = Object.values(bucket).reduce((s, v) => s + v, 0);
+                const label = new Date(h).toLocaleTimeString('en-CA', { hour: '2-digit', minute: '2-digit', hour12: false });
+                const segs = Object.entries(bucket)
+                    .sort((a, b) => b[1] - a[1])
+                    .map(([type, count]) => {
+                        const pct = (count / maxTotal * 100).toFixed(1);
+                        return `<div class="trend-bar-seg" style="width:${pct}%;background:${anomalyColor(type)}" title="${type}: ${count}"></div>`;
+                    }).join('');
+                const totalStr = total > 0 ? total : '';
+                return `<div class="trend-hour-row">
+                    <span class="trend-hour-label">${label}</span>
+                    <div class="trend-bar-track">${segs}</div>
+                    <span class="trend-total">${totalStr}</span>
+                </div>`;
+            });
+
+            chart.innerHTML = rows24.join('');
+        }
+
         // Tab switching
         window.switchTab = function(name) {
             document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
             document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
             document.getElementById(`tab-${name}`).classList.add('active');
             document.getElementById(`panel-${name}`).classList.add('active');
+            if (name === 'trends') loadTrends();
         };
 
         function applyStateUpdate(data) {
