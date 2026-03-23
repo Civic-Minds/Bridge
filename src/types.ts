@@ -110,6 +110,8 @@ export interface DispatchRecommendation {
   status: RecommendationStatus;
   decidedAt: number | null;          // unix ms when dispatcher acted on this recommendation
   dismissReason: string | null;      // optional free-text reason when dismissed
+  // Instruction outcome — populated for approved HOLD/SHORT_TURN recs after Bridge tracks compliance
+  instructionStatus?: 'monitoring' | 'complied' | 'non_complied' | 'expired';
 }
 
 /**

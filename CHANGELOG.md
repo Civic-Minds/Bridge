@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Instruction outcome tracking** — when a dispatcher approves a HOLD or SHORT_TURN recommendation, Bridge now creates an `instructions` DB row and tracks whether the vehicle actually complied. Each poll checks position against the stop at issue time: if the vehicle leaves before `holdSeconds` elapses → `non_complied`; if hold window passes → `complied`; if vehicle stops reporting → `expired`. Outcome survives server restarts.
+- **Compliance badges on approved rec cards** — approved HOLD/SHORT_TURN cards now show a live status badge: `⏱ Monitoring…` → `✓ Vehicle held` / `⚠ Did not hold` / `— Expired` as the instruction resolves.
+- **`GET /api/history` fully implemented** — queries `anomaly_events` table for event counts and average duration grouped by route and anomaly type. Accepts `start`, `end` (unix ms, defaults to last 24 h) and optional `route` filter. Returns `{ history: [{ routeTag, anomalyType, eventCount, avgDurationMs }] }`.
+- **`instructions` table** in `bridge.db` — schema: `rec_id`, `vehicle_id`, `route_tag`, `action`, `at_stop`, `stop_id_at_issue`, `hold_seconds`, `issued_at`, `expires_at`, `lat_at_issue`, `lon_at_issue`, `outcome`, `resolved_at`. Open instructions are reloaded from DB on boot.
+
+### Changed
+- **All `console.*` calls in `src/gtfs.ts` replaced** with structured `log.*` (JSON lines) matching the rest of the codebase.
+- **`instructionStatus` field** added to `DispatchRecommendation` type — `'monitoring' | 'complied' | 'non_complied' | 'expired'` — populated by `applyDecisions()` when an instruction exists for the rec.
+
 ---
 
 ## [1.5.0] - 2026-03-22

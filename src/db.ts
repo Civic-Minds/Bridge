@@ -50,6 +50,22 @@ db.exec(`
     started_at   INTEGER NOT NULL,
     cleared_at   INTEGER
   );
+
+  CREATE TABLE IF NOT EXISTS instructions (
+    rec_id          TEXT    PRIMARY KEY,
+    vehicle_id      TEXT    NOT NULL,
+    route_tag       TEXT    NOT NULL,
+    action          TEXT    NOT NULL,
+    at_stop         TEXT    NOT NULL,
+    stop_id_at_issue TEXT   NOT NULL,
+    hold_seconds    INTEGER,
+    issued_at       INTEGER NOT NULL,
+    expires_at      INTEGER NOT NULL,
+    lat_at_issue    REAL    NOT NULL,
+    lon_at_issue    REAL    NOT NULL,
+    outcome         TEXT    CHECK(outcome IN ('complied', 'non_complied', 'expired')),
+    resolved_at     INTEGER
+  );
 `);
 
 // ── Recommendation decisions ───────────────────────────────────────────────
@@ -154,6 +170,148 @@ export function reconcileAnomalies(
       openAnomalies.delete(key);
     }
   }
+}
+
+// ── Instruction outcome tracking ───────────────────────────────────────────
+
+export interface StoredInstruction {
+  recId: string;
+  vehicleId: string;
+  routeTag: string;
+  action: string;
+  atStop: string;
+  stopIdAtIssue: string;
+  holdSeconds: number | null;
+  issuedAt: number;
+  expiresAt: number;
+  latAtIssue: number;
+  lonAtIssue: number;
+  outcome: 'complied' | 'non_complied' | 'expired' | null;
+  resolvedAt: number | null;
+}
+
+const stmtCreateInstruction = db.prepare(`
+  INSERT OR REPLACE INTO instructions
+    (rec_id, vehicle_id, route_tag, action, at_stop, stop_id_at_issue,
+     hold_seconds, issued_at, expires_at, lat_at_issue, lon_at_issue,
+     outcome, resolved_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
+`);
+
+const stmtLoadOpenInstructions = db.prepare(`
+  SELECT * FROM instructions WHERE outcome IS NULL
+`);
+
+const stmtResolveInstruction = db.prepare(`
+  UPDATE instructions SET outcome = ?, resolved_at = ? WHERE rec_id = ?
+`);
+
+const stmtGetInstruction = db.prepare(`
+  SELECT * FROM instructions WHERE rec_id = ?
+`);
+
+export function createInstruction(
+  recId: string,
+  vehicleId: string,
+  routeTag: string,
+  action: string,
+  atStop: string,
+  stopIdAtIssue: string,
+  holdSeconds: number | null,
+  issuedAt: number,
+  expiresAt: number,
+  latAtIssue: number,
+  lonAtIssue: number,
+): void {
+  stmtCreateInstruction.run(
+    recId, vehicleId, routeTag, action, atStop, stopIdAtIssue,
+    holdSeconds, issuedAt, expiresAt, latAtIssue, lonAtIssue,
+  );
+}
+
+function rowToInstruction(r: Record<string, unknown>): StoredInstruction {
+  return {
+    recId: r.rec_id as string,
+    vehicleId: r.vehicle_id as string,
+    routeTag: r.route_tag as string,
+    action: r.action as string,
+    atStop: r.at_stop as string,
+    stopIdAtIssue: r.stop_id_at_issue as string,
+    holdSeconds: r.hold_seconds as number | null,
+    issuedAt: r.issued_at as number,
+    expiresAt: r.expires_at as number,
+    latAtIssue: r.lat_at_issue as number,
+    lonAtIssue: r.lon_at_issue as number,
+    outcome: r.outcome as 'complied' | 'non_complied' | 'expired' | null,
+    resolvedAt: r.resolved_at as number | null,
+  };
+}
+
+export function loadOpenInstructions(): StoredInstruction[] {
+  const rows = stmtLoadOpenInstructions.all() as Array<Record<string, unknown>>;
+  return rows.map(rowToInstruction);
+}
+
+export function resolveInstruction(
+  recId: string,
+  outcome: 'complied' | 'non_complied' | 'expired',
+  resolvedAt: number,
+): void {
+  stmtResolveInstruction.run(outcome, resolvedAt, recId);
+}
+
+export function getInstruction(recId: string): StoredInstruction | null {
+  const row = stmtGetInstruction.get(recId) as Record<string, unknown> | null;
+  return row ? rowToInstruction(row) : null;
+}
+
+// ── Anomaly history query ───────────────────────────────────────────────────
+
+export interface AnomalyHistoryRow {
+  routeTag: string;
+  anomalyType: string;
+  eventCount: number;
+  avgDurationMs: number | null;
+}
+
+const stmtQueryHistory = db.prepare(`
+  SELECT
+    route_tag,
+    anomaly_type,
+    COUNT(*)                                                       AS event_count,
+    AVG(COALESCE(cleared_at, ?) - started_at)                     AS avg_duration_ms
+  FROM anomaly_events
+  WHERE started_at >= ? AND started_at <= ?
+  GROUP BY route_tag, anomaly_type
+  ORDER BY route_tag, event_count DESC
+`);
+
+const stmtQueryHistoryRoute = db.prepare(`
+  SELECT
+    route_tag,
+    anomaly_type,
+    COUNT(*)                                                       AS event_count,
+    AVG(COALESCE(cleared_at, ?) - started_at)                     AS avg_duration_ms
+  FROM anomaly_events
+  WHERE started_at >= ? AND started_at <= ? AND route_tag = ?
+  GROUP BY route_tag, anomaly_type
+  ORDER BY event_count DESC
+`);
+
+export function queryAnomalyHistory(
+  startMs: number,
+  endMs: number,
+  routeTag?: string,
+): AnomalyHistoryRow[] {
+  const rows = routeTag
+    ? stmtQueryHistoryRoute.all(endMs, startMs, endMs, routeTag)
+    : stmtQueryHistory.all(endMs, startMs, endMs);
+  return (rows as Array<Record<string, unknown>>).map(r => ({
+    routeTag: r.route_tag as string,
+    anomalyType: r.anomaly_type as string,
+    eventCount: r.event_count as number,
+    avgDurationMs: r.avg_duration_ms as number | null,
+  }));
 }
 
 log.info('DB', 'opened', { path: DB_PATH });

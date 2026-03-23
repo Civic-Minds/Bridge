@@ -177,7 +177,18 @@ function renderRecCard(rec) {
     const escapedId = rec.id.replace(/'/g, "\\'");
 
     if (status === 'approved') {
-        decisionBadge = `<span class="rec-decision-badge rec-approved">✓ ACCEPTED</span>`;
+        const instrStatus = rec.instructionStatus;
+        let instrBadge = '';
+        if (instrStatus === 'monitoring') {
+            instrBadge = ` <span class="rec-instr-badge rec-instr-monitoring">⏱ Monitoring…</span>`;
+        } else if (instrStatus === 'complied') {
+            instrBadge = ` <span class="rec-instr-badge rec-instr-complied">✓ Vehicle held</span>`;
+        } else if (instrStatus === 'non_complied') {
+            instrBadge = ` <span class="rec-instr-badge rec-instr-noncomplied">⚠ Did not hold</span>`;
+        } else if (instrStatus === 'expired') {
+            instrBadge = ` <span class="rec-instr-badge rec-instr-expired">— Expired</span>`;
+        }
+        decisionBadge = `<span class="rec-decision-badge rec-approved">✓ ACCEPTED</span>${instrBadge}`;
     } else if (status === 'dismissed') {
         const reasonNote = rec.dismissReason ? ` — "${rec.dismissReason}"` : '';
         decisionBadge = `<span class="rec-decision-badge rec-dismissed">✗ DISMISSED${reasonNote}</span>`;

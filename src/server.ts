@@ -5,7 +5,11 @@ import { analyzeRoute, buildPredictionIndex, generateRecommendations, generateCr
 import { Vehicle, VehicleHistory, RouteState, ConflictZone, DispatchRecommendation, DispatchPolicy, DEFAULT_POLICY, GtfsStop } from './types';
 import { loadGtfs, GtfsRouteData } from './gtfs';
 import { log } from './logger';
-import { saveDecision, loadRecentDecisions, seedOpenAnomalies, reconcileAnomalies } from './db';
+import {
+  saveDecision, loadRecentDecisions, seedOpenAnomalies, reconcileAnomalies,
+  createInstruction, loadOpenInstructions, resolveInstruction, getInstruction,
+  queryAnomalyHistory, StoredInstruction,
+} from './db';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const GtfsRealtimeBindings = require('gtfs-realtime-bindings');
@@ -113,6 +117,12 @@ let routeSpacing: Map<string, number> = new Map();
 // After DECISION_TTL_MS a dismissed/approved rec becomes surfaceable again if the condition persists.
 const DECISION_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const recDecisions = new Map<string, { status: 'approved' | 'dismissed'; decidedAt: number; dismissReason: string | null }>();
+
+// Open instructions: approved HOLD/SHORT_TURN recs we're watching for compliance.
+// Keyed by recommendation ID. Resolved entries are removed each poll.
+const openInstructions = new Map<string, StoredInstruction>();
+// Resolved instruction outcomes: kept for the session so applyDecisions can surface them.
+const resolvedOutcomes = new Map<string, 'complied' | 'non_complied' | 'expired'>();
 
 // Server-sent events: connected dispatcher clients
 const sseClients = new Set<Response>();
@@ -289,6 +299,9 @@ async function poll(): Promise<void> {
     }));
     log.info('Poll', 'vehicles updated', { vehicles: totalVehicles, recs: totalRecs, routes: routeMetrics });
 
+    // Check compliance for all open instructions
+    checkInstructionCompliance(now);
+
     healthState.lastPollAt = Date.now();
     healthState.lastPollSuccess = true;
     healthState.consecutiveErrors = 0;
@@ -308,6 +321,45 @@ async function poll(): Promise<void> {
     healthState.consecutiveErrors++;
     healthState.lastError = (err as Error).message;
     log.error('Poll', 'feed error', { err: (err as Error).message, consecutiveErrors: healthState.consecutiveErrors });
+  }
+}
+
+/**
+ * Check each open instruction against current vehicle positions and resolve completed ones.
+ *
+ * HOLD compliance rules:
+ *   - complied:     vehicle is still at the same stop after holdSeconds have elapsed
+ *   - non_complied: vehicle moved to a different stop before holdSeconds elapsed
+ *   - expired:      holdSeconds elapsed and vehicle is no longer reporting (> 2 poll intervals)
+ */
+function checkInstructionCompliance(nowMs: number): void {
+  for (const [recId, instr] of openInstructions) {
+    const route = systemState[instr.routeTag];
+    const vehicle = route?.vehicles.find(v => v.id === instr.vehicleId);
+    const elapsed = nowMs - instr.issuedAt;
+    const held = elapsed >= (instr.holdSeconds ?? 0) * 1000;
+
+    let outcome: 'complied' | 'non_complied' | 'expired' | null = null;
+
+    if (!vehicle) {
+      // Vehicle not reporting — if instruction window has passed, mark expired
+      if (elapsed > (instr.holdSeconds ?? 30) * 1000 + POLL_INTERVAL_MS * 2) {
+        outcome = 'expired';
+      }
+    } else if (vehicle.stopId && instr.stopIdAtIssue && vehicle.stopId !== instr.stopIdAtIssue && !held) {
+      // Vehicle left the stop before the hold window elapsed → non-complied
+      outcome = 'non_complied';
+    } else if (held) {
+      // Hold window elapsed and vehicle is still here or moved on naturally → complied
+      outcome = 'complied';
+    }
+
+    if (outcome) {
+      resolveInstruction(recId, outcome, nowMs);
+      resolvedOutcomes.set(recId, outcome);
+      openInstructions.delete(recId);
+      log.info('Instruction', 'resolved', { recId, vehicleId: instr.vehicleId, outcome, elapsedMs: elapsed });
+    }
   }
 }
 
@@ -362,6 +414,14 @@ async function boot(): Promise<void> {
     log.info('Boot', 'restored decisions from DB', { count: storedDecisions.length });
   }
 
+  // Restore open instructions so compliance tracking survives a restart
+  for (const instr of loadOpenInstructions()) {
+    openInstructions.set(instr.recId, instr);
+  }
+  if (openInstructions.size > 0) {
+    log.info('Boot', 'restored open instructions', { count: openInstructions.size });
+  }
+
   // Seed open-anomaly state from DB so we don't create duplicate open rows
   seedOpenAnomalies();
 
@@ -401,12 +461,22 @@ app.get('/api/anomalies', (_req: Request, res: Response) => {
   res.json({ timestamp: Date.now(), count: anomalies.length, anomalies });
 });
 
-// Overlay dispatcher decisions onto a set of recommendations before returning them.
+// Overlay dispatcher decisions and instruction outcomes onto recommendations.
 function applyDecisions(recs: DispatchRecommendation[]): DispatchRecommendation[] {
   return recs.map(rec => {
     const decision = recDecisions.get(rec.id);
-    if (!decision) return rec;
-    return { ...rec, status: decision.status, decidedAt: decision.decidedAt, dismissReason: decision.dismissReason };
+    const base = decision
+      ? { ...rec, status: decision.status, decidedAt: decision.decidedAt, dismissReason: decision.dismissReason }
+      : rec;
+
+    // Enrich with instruction tracking status for approved HOLD/SHORT_TURN recs
+    if (base.status === 'approved' && (base.action === 'HOLD' || base.action === 'SHORT_TURN')) {
+      const resolved = resolvedOutcomes.get(rec.id);
+      if (resolved) return { ...base, instructionStatus: resolved };
+      if (openInstructions.has(rec.id)) return { ...base, instructionStatus: 'monitoring' as const };
+    }
+
+    return base;
   });
 }
 
@@ -445,7 +515,31 @@ app.post('/api/recommendations/:id/approve', (req: Request, res: Response) => {
   // Find the rec to get vehicle/route context for DB storage
   const allRecs = Object.values(systemRecommendations).flat();
   const rec = allRecs.find(r => r.id === id);
-  if (rec) saveDecision(id, rec.action, rec.vehicleId, rec.routeTag, 'approved', approvedAt, null);
+  if (rec) {
+    saveDecision(id, rec.action, rec.vehicleId, rec.routeTag, 'approved', approvedAt, null);
+
+    // For HOLD and SHORT_TURN: create an instruction to track compliance
+    if (rec.action === 'HOLD' || rec.action === 'SHORT_TURN') {
+      const vehicle = systemState[rec.routeTag]?.vehicles.find(v => v.id === rec.vehicleId);
+      if (vehicle) {
+        const holdSecs = rec.holdSeconds ?? 60;
+        const expiresAt = approvedAt + holdSecs * 1000 + POLL_INTERVAL_MS * 3;
+        createInstruction(
+          id, rec.vehicleId, rec.routeTag, rec.action, rec.atStop,
+          vehicle.stopId, holdSecs, approvedAt, expiresAt, vehicle.lat, vehicle.lon,
+        );
+        const instr: StoredInstruction = {
+          recId: id, vehicleId: rec.vehicleId, routeTag: rec.routeTag,
+          action: rec.action, atStop: rec.atStop, stopIdAtIssue: vehicle.stopId,
+          holdSeconds: holdSecs, issuedAt: approvedAt, expiresAt,
+          latAtIssue: vehicle.lat, lonAtIssue: vehicle.lon,
+          outcome: null, resolvedAt: null,
+        };
+        openInstructions.set(id, instr);
+        log.info('Instruction', 'created', { recId: id, vehicleId: rec.vehicleId, holdSecs, atStop: rec.atStop });
+      }
+    }
+  }
   log.info('Decision', 'approved', { id, vehicleId: rec?.vehicleId, routeTag: rec?.routeTag });
   res.json({ success: true, id, status: 'approved' });
 });
@@ -542,13 +636,29 @@ app.get('/api/stream', (req: Request, res: Response) => {
   });
 });
 
-// History endpoint — flat list of anomaly events within a time window.
-// Used for trend charts and post-incident review.
+// History endpoint — anomaly event counts within a time window, grouped by route and type.
 // GET /api/history?start=<unix_ms>&end=<unix_ms>&route=<tag>
+// Defaults to the past 24 hours when start/end are omitted.
 app.get('/api/history', (req: Request, res: Response) => {
-  // Basic stub — full query implementation when persistence layer is further built out.
-  // Returns anomaly event counts grouped by route and type for the requested window.
-  res.json({ note: 'history endpoint available — query parameters: start, end, route' });
+  const now = Date.now();
+  const endMs   = parseInt(req.query.end   as string, 10) || now;
+  const startMs = parseInt(req.query.start as string, 10) || endMs - 24 * 60 * 60 * 1000;
+  const route   = typeof req.query.route === 'string' ? req.query.route : undefined;
+
+  if (startMs >= endMs) {
+    res.status(400).json({ error: 'start must be before end' });
+    return;
+  }
+
+  const rows = queryAnomalyHistory(startMs, endMs, route);
+  res.json({
+    timestamp: now,
+    startMs,
+    endMs,
+    route: route ?? 'all',
+    count: rows.length,
+    history: rows,
+  });
 });
 
 // Health endpoint — for uptime monitoring and feed staleness checking.

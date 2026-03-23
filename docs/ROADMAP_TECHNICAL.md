@@ -18,7 +18,7 @@ The current system detects problems and surfaces recommendations. The full loop 
 - [ ] **Outbound webhook** — configurable endpoint Bridge POSTs approved instructions to.
   Agencies connect this to their MDT, driver app, or CAD. Bridge doesn't own the delivery
   channel; it produces the right payload and hands it off.
-- [ ] **Instruction outcome tracking** — after issuing a HOLD, did the vehicle actually stop?
+- [x] **Instruction outcome tracking** — after issuing a HOLD, did the vehicle actually stop?
   After a SHORT_TURN, did the vehicle reverse? Close the loop by watching the vehicle's
   next position reports and flagging if the instruction wasn't followed.
 - [ ] **Recommendation feedback loop** — log accepted/dismissed/expired status for every
@@ -90,14 +90,12 @@ Currently TTC-only. The analysis pipeline is agency-agnostic; the binding is in 
 
 All state is in-memory. No history survives a restart.
 
-- [ ] **SQLite persistence** (`src/db.ts`) — store anomaly events, recommendations, and
-  dispatcher decisions. Lightweight, no external dependency.
-  Schema: `incidents(route, type, vehicle_id, timestamp, resolved_at)`,
-  `recommendations(id, route, action, severity, generated_at, decision, decided_at)`.
+- [x] **SQLite persistence** (`src/db.ts`) — `rec_decisions`, `anomaly_events`, and `instructions`
+  tables. No external dependency (uses built-in `node:sqlite`).
 - [ ] **Trend charts** — 24-hour bar chart in sidebar: bunching frequency per hour per route.
   Distinguishes current incident from chronic pattern.
-- [ ] **History API** — `GET /api/history?route=504&start=<ts>&end=<ts>` returns incident
-  timeline for a route in a time range. For performance reporting.
+- [x] **History API** — `GET /api/history?route=504&start=<ts>&end=<ts>` — event counts and
+  average durations from `anomaly_events`, grouped by route and anomaly type.
 - [ ] **Baseline learning** — after 2+ weeks of data, compute expected bunching rates by
   route/time/day. Alert when current rate exceeds baseline significantly.
 
