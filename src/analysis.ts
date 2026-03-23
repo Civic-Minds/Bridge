@@ -13,7 +13,12 @@ import {
   RouteState,
   DispatchPolicy,
   DEFAULT_POLICY,
+  RecommendationStatus,
 } from './types';
+
+// Sentinel status applied to all freshly generated recommendations.
+// The server layer overlays actual decisions (approved/dismissed) before returning to callers.
+const PENDING: RecommendationStatus = 'pending';
 
 const SEVERITY_ORDER: Record<RecommendationSeverity, number> = { CRITICAL: 0, HIGH: 1, MEDIUM: 2 };
 
@@ -79,13 +84,14 @@ export function inferDirection(bearing: number): string {
  * Signals:
  *  bunchingPairs  — consecutive same-direction pairs with gap ≤ 1 stop
  *  closingPairs   — pairs whose gap shrank since the last poll (pre-bunch warning)
- *  dwellAnomalies — vehicles stopped at the same stop for 3+ consecutive polls (~30s)
+ *  dwellAnomalies — vehicles stopped ≥ 30s at the same stop (using reportedAt timestamps)
  *  largeGaps      — gaps more than 2× the average gap (rider wait time risk)
  */
 export function analyzeRoute(
   vehicles: Vehicle[],
   history: VehicleHistory,
   predictions?: PredictionIndex,
+  pollIntervalMs: number = 10000,
 ): {
   vehicles: VehicleWithAnalysis[];
   metrics: Omit<RouteMetrics, 'activeCount'>;
@@ -138,9 +144,16 @@ export function analyzeRoute(
       }
 
       // Closing: gap to vehicle ahead shrank since last poll
-      if (gap !== null && prev?.gapAhead != null && prev.gapAhead > 1 && gap < prev.gapAhead) {
+      let predictedBunchSeconds: number | null = null;
+      const isClosing = gap !== null && prev?.gapAhead != null && prev.gapAhead > 1 && gap < prev.gapAhead;
+      if (isClosing) {
         closingPairs++;
         if (!anomalies.includes('bunching')) anomalies.push('closing');
+        // Project how many polls until the gap reaches zero at the current closing rate.
+        const stopsClosedThisPoll = prev!.gapAhead! - gap!;
+        if (stopsClosedThisPoll > 0) {
+          predictedBunchSeconds = Math.round((gap! / stopsClosedThisPoll) * (pollIntervalMs / 1000));
+        }
       }
 
       // Large gap after this vehicle (the vehicle behind will face a wait)
@@ -149,10 +162,14 @@ export function analyzeRoute(
         anomalies.push('gap_ahead');
       }
 
-      // Dwell: STOPPED_AT the same stop for 3+ consecutive polls (~30s)
-      const wasStopped = prev?.status === 2 && prev?.stopId === v.stopId;
-      const dwellPolls = v.currentStatus === 2 ? (wasStopped ? prev!.dwellPolls + 1 : 1) : 0;
-      if (dwellPolls >= 3) {
+      // Dwell: STOPPED_AT the same stop for ≥ 30s, timed from reportedAt.
+      // Using real timestamps (not poll counts) makes this poll-interval-independent.
+      const stoppedAtSameStop = v.currentStatus === 2 && prev?.stopId === v.stopId;
+      const dwellSince: number | null = v.currentStatus === 2
+        ? (stoppedAtSameStop && prev!.dwellSince !== null ? prev!.dwellSince : (v.reportedAt || nowSeconds))
+        : null;
+      const dwellSeconds = (dwellSince !== null) ? Math.max(0, (v.reportedAt || nowSeconds) - dwellSince) : 0;
+      if (dwellSeconds >= 30) {
         dwellAnomalies++;
         anomalies.push('dwell');
       }
@@ -179,7 +196,7 @@ export function analyzeRoute(
         stopSequence: v.stopSequence,
         stopId: v.stopId,
         status: v.currentStatus,
-        dwellPolls,
+        dwellSince,
         gapAhead: gap,
         inferredDir: dir,
       };
@@ -187,7 +204,7 @@ export function analyzeRoute(
 
       analysisMap.set(v.id, {
         ...v,
-        analysis: { inferredDir: dir, gapAhead: gap, dwellPolls, anomalies, scheduleDeviation },
+        analysis: { inferredDir: dir, gapAhead: gap, dwellSeconds, predictedBunchSeconds, anomalies, scheduleDeviation },
       });
     }
   }
@@ -198,7 +215,8 @@ export function analyzeRoute(
       analysis: {
         inferredDir: inferDirection(v.heading),
         gapAhead: null,
-        dwellPolls: 0,
+        dwellSeconds: 0,
+        predictedBunchSeconds: null,
         anomalies: [],
         scheduleDeviation: null,
       },
@@ -272,15 +290,19 @@ export function generateRecommendations(
       const isLargeGap = behind.analysis.anomalies.includes('gap_ahead');
 
       if (isBunching || isClosing) {
-        // How many stops until they meet?
-        const stopsUntilBunch = isBunching ? 0 : gap;
-        const secondsToBunch = stopsUntilBunch * secondsPerStop;
-
         // Hold time = half the gap deficit relative to average headway
         const gapDeficit = Math.max(0, avgGap - gap);
         const holdSeconds = Math.round((gapDeficit * secondsPerStop) / 2);
 
-        const severity: RecommendationSeverity = isBunching ? 'CRITICAL' : (secondsToBunch < pollIntervalMs / 1000 * 3 ? 'HIGH' : 'MEDIUM');
+        // Use the look-ahead projection when available (closing pair with history);
+        // fall back to a static estimate based on current gap and speed.
+        const estimatedSecondsToBunch: number = isBunching
+          ? 0
+          : (behind.analysis.predictedBunchSeconds ?? Math.round(gap * secondsPerStop));
+
+        const severity: RecommendationSeverity = isBunching
+          ? 'CRITICAL'
+          : (estimatedSecondsToBunch < (pollIntervalMs / 1000) * 3 ? 'HIGH' : 'MEDIUM');
 
         const deviationStr = behind.analysis.scheduleDeviation !== null
           ? ` (${behind.analysis.scheduleDeviation > 0 ? '+' : ''}${Math.round(behind.analysis.scheduleDeviation)}s vs schedule)`
@@ -297,10 +319,13 @@ export function generateRecommendations(
             atStop: behind.stopId,
             reason: isBunching
               ? `Vehicle ${behind.id} is bunched with ${ahead.id} (${gap} stop gap)${deviationStr}. Hold to restore ${Math.round(avgGap)}-stop headway.`
-              : `Vehicle ${behind.id} closing on ${ahead.id}: gap ${gap} stops and shrinking${deviationStr}. Hold ${holdSeconds}s to prevent bunch.`,
-            estimatedSecondsToBunch: isBunching ? 0 : secondsToBunch,
+              : `Vehicle ${behind.id} closing on ${ahead.id}: gap ${gap} stops, bunches in ≈${estimatedSecondsToBunch}s${deviationStr}. Hold ${holdSeconds}s to prevent bunch.`,
+            estimatedSecondsToBunch,
             headwayAfterAction: Math.round(avgGap),
             generatedAt: now,
+            status: PENDING,
+            decidedAt: null,
+            dismissReason: null,
           });
         }
       }
@@ -327,6 +352,9 @@ export function generateRecommendations(
               estimatedSecondsToBunch: null,
               headwayAfterAction: Math.round(gapStops / 2),
               generatedAt: now,
+              status: PENDING,
+              decidedAt: null,
+              dismissReason: null,
             });
           }
         } else {
@@ -343,6 +371,9 @@ export function generateRecommendations(
               estimatedSecondsToBunch: null,
               headwayAfterAction: Math.round(gapStops / 2),
               generatedAt: now,
+              status: PENDING,
+              decidedAt: null,
+              dismissReason: null,
             });
           }
         }
@@ -502,6 +533,9 @@ export function generateCrossRouteRecommendations(
           estimatedSecondsToBunch: null,
           headwayAfterAction: newLocalHeadwayMin,
           generatedAt: now,
+          status: PENDING,
+          decidedAt: null,
+          dismissReason: null,
         });
       }
     }
@@ -550,6 +584,9 @@ export function generateCrossRouteRecommendations(
           estimatedSecondsToBunch: null,
           headwayAfterAction: gapFillStops,
           generatedAt: now,
+          status: PENDING,
+          decidedAt: null,
+          dismissReason: null,
         });
       }
     }

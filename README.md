@@ -1,8 +1,27 @@
 # Bridge
 
-Real-time TTC bunching detection and early warning for Toronto streetcar routes.
+Real-time TTC bunching detection and dispatch action engine for Toronto streetcar routes.
 
-Bridge polls the TTC GTFS-Realtime vehicle positions feed, detects bunching (two vehicles running < 150m apart in the same direction), and serves a live Leaflet map with vehicle markers, conflict zone overlays, and a sidebar dashboard.
+## Problem
+
+TTC dispatchers have no unified tool to detect bunching in real time and receive actionable recommendations. Existing monitoring is reactive — operators see problems but have no guidance on what to do. Bridge bridges this gap by turning live GTFS-RT data into a closed-loop system that detects anomalies, scores severity, and generates specific dispatch instructions.
+
+## Features
+
+- **Live Bunching Detection**: Polls TTC GTFS-RT every 10 seconds, detects bunching, closing pairs, large gaps, and dwell anomalies across all active streetcar routes.
+- **Dispatch Action Engine**: Generates specific instructions — HOLD, RELEASE_EARLY, SHORT_TURN, CONVERT_TO_EXPRESS, CONVERT_TO_LOCAL — with calculated hold times, projected headways, and plain-language reasoning.
+- **Route Ladder View**: SKATE-style linear dispatcher view with vehicles positioned by stop sequence and colour-coded by anomaly state.
+- **Policy Layer**: Agency-configurable constraint system — disable action types, set severity thresholds, and document operating constraints per route.
+- **Cross-Route Recommendations**: Detects local/express corridor proximity and suggests service substitutions across 16 TTC route pairs.
+
+## Stack
+
+- **Backend**: Node.js, TypeScript, Express
+- **Frontend**: Leaflet, Vanilla JS
+- **Data**: TTC GTFS-RT (vehicle positions + trip updates)
+- **Testing**: Jest + ts-jest (41 tests)
+
+---
 
 ## Running locally
 
@@ -54,3 +73,11 @@ docker run -p 3000:3000 bridge
 ## Status
 
 In development. Route geometry (path rendering on the map) will be populated from static GTFS in a future pass. Vehicle markers are positioned live; route lines are not yet drawn.
+
+---
+
+- [Roadmap](./ROADMAP.md)
+- [Changelog](./CHANGELOG.md)
+- [Security](./SECURITY.md)
+
+Created by Civic Minds

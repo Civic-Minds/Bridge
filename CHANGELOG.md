@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.0] - 2026-03-22
+
+### Added
+- **Predicted bunching look-ahead**: `VehicleAnalysis.predictedBunchSeconds` — for every closing pair, projects seconds until bunch from the current gap-closing rate (`stopsClosedThisPoll / pollInterval`). More accurate than a static stop-count estimate. Used in HOLD recommendation text and severity classification.
+- **Recommendation state machine**: `DispatchRecommendation` now carries `status` (`pending` | `approved` | `dismissed`), `decidedAt`, and `dismissReason`. Dispatcher decisions are stored in a `recDecisions` map with a 5-minute TTL (after TTL, a persistent condition re-surfaces the recommendation).
+- **`POST /api/recommendations/:id/approve`** — marks a recommendation as accepted; logs the decision.
+- **`POST /api/recommendations/:id/dismiss`** — marks a recommendation as dismissed with optional `{ reason }` body.
+- **`GET /health`** — production monitoring endpoint: returns `status` (`ok` | `degraded` | `error`), uptime, last poll timestamp, last poll age in seconds, consecutive error count, last error message, route count, and vehicle count. Returns HTTP 503 when `consecutiveErrors >= 3`.
+- **Accept / Dismiss UI on recommendation cards**: each pending rec card has Accept and Dismiss buttons. Clicking either POSTs to the respective endpoint and immediately re-fetches the recommendation list. Approved cards are visually dimmed; dismissed cards are hidden from the main view.
+
+### Changed
+- **`reportedAt`-based dwell timing**: replaced the poll-count proxy (`dwellPolls`) with real elapsed time. `VehicleRecord.dwellSince` stores the unix-second timestamp when the vehicle first stopped at its current stop. `VehicleAnalysis.dwellSeconds` is the elapsed seconds. Threshold remains 30s but is now poll-interval-independent and accurate to the second.
+- **HOLD recommendation reason string**: updated to include projected seconds to bunch (`bunches in ≈Xs`) when a look-ahead estimate is available.
+- **`GET /api/recommendations`** overlays decisions before responding — each rec in the response reflects its current `status`, `decidedAt`, and `dismissReason`.
+- **`GET /api/anomalies`**: `dwellPolls` field replaced with `dwellSeconds`.
+- **Health tracking in `poll()`**: updates `healthState` on success and failure; cleans up stale decisions on each successful poll.
+
+---
+
 ## [1.3.0] - 2026-03-22
 
 ### Changed

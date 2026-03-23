@@ -107,6 +107,20 @@ let gtfsData: Map<string, GtfsRouteData> = new Map();
 // Average stop spacing (metres) per route, derived from GTFS geometry at startup
 let routeSpacing: Map<string, number> = new Map();
 
+// Dispatcher decisions: keyed by recommendation ID, persisted across polls.
+// After DECISION_TTL_MS a dismissed/approved rec becomes surfaceable again if the condition persists.
+const DECISION_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const recDecisions = new Map<string, { status: 'approved' | 'dismissed'; decidedAt: number; dismissReason: string | null }>();
+
+// Health tracking
+const healthState = {
+  startedAt: Date.now(),
+  lastPollAt: 0,
+  lastPollSuccess: true,
+  consecutiveErrors: 0,
+  lastError: null as string | null,
+};
+
 function initRoutes(): void {
   systemState = {};
   systemRecommendations = {};
@@ -236,6 +250,7 @@ async function poll(): Promise<void> {
         rawVehicles,
         vehicleHistory[tag] ?? new Map(),
         predictions,
+        POLL_INTERVAL_MS,
       );
 
       vehicleHistory[tag] = updatedHistory;
@@ -265,7 +280,21 @@ async function poll(): Promise<void> {
       }).join('  ') +
       (totalRecs > 0 ? ` | ${totalRecs} recommendation${totalRecs > 1 ? 's' : ''}` : '')
     );
+
+    healthState.lastPollAt = Date.now();
+    healthState.lastPollSuccess = true;
+    healthState.consecutiveErrors = 0;
+    healthState.lastError = null;
+
+    // Evict stale decisions so a dismissed rec eventually re-surfaces if the condition persists
+    const now2 = Date.now();
+    for (const [id, decision] of recDecisions) {
+      if (now2 - decision.decidedAt > DECISION_TTL_MS) recDecisions.delete(id);
+    }
   } catch (err) {
+    healthState.lastPollSuccess = false;
+    healthState.consecutiveErrors++;
+    healthState.lastError = (err as Error).message;
     console.error('[Poll] Error:', (err as Error).message);
   }
 }
@@ -315,7 +344,7 @@ app.get('/api/anomalies', (_req: Request, res: Response) => {
         anomalies: v.analysis.anomalies,
         inferredDir: v.analysis.inferredDir,
         gapAhead: v.analysis.gapAhead,
-        dwellPolls: v.analysis.dwellPolls,
+        dwellSeconds: v.analysis.dwellSeconds,
         scheduleDeviation: v.analysis.scheduleDeviation,
         stopId: v.stopId,
         stopSequence: v.stopSequence,
@@ -326,11 +355,20 @@ app.get('/api/anomalies', (_req: Request, res: Response) => {
   res.json({ timestamp: Date.now(), count: anomalies.length, anomalies });
 });
 
+// Overlay dispatcher decisions onto a set of recommendations before returning them.
+function applyDecisions(recs: DispatchRecommendation[]): DispatchRecommendation[] {
+  return recs.map(rec => {
+    const decision = recDecisions.get(rec.id);
+    if (!decision) return rec;
+    return { ...rec, status: decision.status, decidedAt: decision.decidedAt, dismissReason: decision.dismissReason };
+  });
+}
+
 // Recommendations endpoint — actionable dispatch instructions, sorted by severity.
 // Includes both single-route recommendations and cross-route corridor substitutions.
+// Decisions (approved/dismissed) are overlaid from the dispatcher decision store.
 app.get('/api/recommendations', (_req: Request, res: Response) => {
-  const all = Object.values(systemRecommendations).flat();
-  // Re-sort across all routes: CRITICAL first
+  const all = applyDecisions(Object.values(systemRecommendations).flat());
   const order: Record<string, number> = { CRITICAL: 0, HIGH: 1, MEDIUM: 2 };
   all.sort((a, b) => order[a.severity] - order[b.severity]);
   const crossRouteCount = (systemRecommendations['_cross_route'] ?? []).length;
@@ -350,7 +388,25 @@ app.get('/api/recommendations/:routeTag', (req: Request, res: Response) => {
     res.status(404).json({ error: `Route ${routeTag} not monitored` });
     return;
   }
-  res.json({ timestamp: Date.now(), routeTag, count: recs.length, recommendations: recs });
+  res.json({ timestamp: Date.now(), routeTag, count: recs.length, recommendations: applyDecisions(recs) });
+});
+
+// Approve a recommendation — dispatcher has accepted and will action it
+app.post('/api/recommendations/:id/approve', (req: Request, res: Response) => {
+  const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  recDecisions.set(id, { status: 'approved', decidedAt: Date.now(), dismissReason: null });
+  console.log(`[Decision] APPROVED: ${id}`);
+  res.json({ success: true, id, status: 'approved' });
+});
+
+// Dismiss a recommendation — dispatcher has reviewed and chosen not to act
+app.post('/api/recommendations/:id/dismiss', (req: Request, res: Response) => {
+  const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const reason = (req.body as { reason?: unknown }).reason;
+  const dismissReason = typeof reason === 'string' ? reason : null;
+  recDecisions.set(id, { status: 'dismissed', decidedAt: Date.now(), dismissReason });
+  console.log(`[Decision] DISMISSED: ${id}${dismissReason ? ` — "${dismissReason}"` : ''}`);
+  res.json({ success: true, id, status: 'dismissed', dismissReason });
 });
 
 // Policy endpoints — read and update the active dispatch policy at runtime.
@@ -409,6 +465,30 @@ app.post('/api/config/active-routes', (req: Request, res: Response) => {
   CONFIG.routes = routes as string[];
   initRoutes();
   res.json({ success: true, activeRoutes: CONFIG.routes });
+});
+
+// Health endpoint — for uptime monitoring and feed staleness checking.
+// Returns 200 when the last poll succeeded, 503 when consecutive errors are accumulating.
+app.get('/health', (_req: Request, res: Response) => {
+  const now = Date.now();
+  const lastPollAgeSeconds = healthState.lastPollAt > 0
+    ? Math.round((now - healthState.lastPollAt) / 1000)
+    : null;
+  const totalVehicles = Object.values(systemState).reduce((s, r) => s + r.metrics.activeCount, 0);
+  const status = healthState.consecutiveErrors >= 3 ? 'error'
+    : healthState.consecutiveErrors >= 1 ? 'degraded'
+    : 'ok';
+  const code = status === 'error' ? 503 : 200;
+  res.status(code).json({
+    status,
+    uptime: Math.round((now - healthState.startedAt) / 1000),
+    lastPollAt: healthState.lastPollAt || null,
+    lastPollAgeSeconds,
+    consecutiveErrors: healthState.consecutiveErrors,
+    lastError: healthState.lastError,
+    routeCount: CONFIG.routes.length,
+    vehicleCount: totalVehicles,
+  });
 });
 
 app.listen(PORT, () => console.log(`Bridge running at http://localhost:${PORT}`));

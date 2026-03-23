@@ -18,11 +18,12 @@ export type AnomalyType = 'bunching' | 'closing' | 'dwell' | 'gap_ahead' | 'earl
 
 // Per-vehicle computed fields added by analyzeRoute
 export interface VehicleAnalysis {
-  inferredDir: string;             // bearing-based direction: '0' or '1'
-  gapAhead: number | null;         // stop-sequence gap to the vehicle ahead (same direction)
-  dwellPolls: number;              // consecutive polls stopped at the same stop
+  inferredDir: string;                  // bearing-based direction: '0' or '1'
+  gapAhead: number | null;              // stop-sequence gap to the vehicle ahead (same direction)
+  dwellSeconds: number;                 // elapsed seconds stopped at the current stop (0 if moving)
+  predictedBunchSeconds: number | null; // projected seconds until this vehicle bunches with the one ahead
   anomalies: AnomalyType[];
-  scheduleDeviation: number | null; // seconds behind schedule (positive=late, negative=early)
+  scheduleDeviation: number | null;     // seconds behind schedule (positive=late, negative=early)
 }
 
 export interface VehicleWithAnalysis extends Vehicle {
@@ -34,7 +35,7 @@ export interface VehicleRecord {
   stopSequence: number;
   stopId: string;
   status: number;
-  dwellPolls: number;
+  dwellSince: number | null; // unix seconds when vehicle first stopped at current stop (null if moving)
   gapAhead: number | null;
   inferredDir: string;
 }
@@ -50,7 +51,7 @@ export interface RouteMetrics {
   activeCount: number;
   bunchingPairs: number;  // consecutive same-direction pairs with gap ≤ 1 stop
   closingPairs: number;   // pairs whose gap shrank since the last poll
-  dwellAnomalies: number; // vehicles stopped at the same stop for 3+ polls (~30s)
+  dwellAnomalies: number; // vehicles stopped ≥ 30s at the same stop
   largeGaps: number;      // gaps more than 2× the route's average gap
 }
 
@@ -90,6 +91,8 @@ export type RecommendationAction =
 
 export type RecommendationSeverity = 'CRITICAL' | 'HIGH' | 'MEDIUM';
 
+export type RecommendationStatus = 'pending' | 'approved' | 'dismissed';
+
 export interface DispatchRecommendation {
   id: string;                        // unique key: `${routeTag}-${vehicleId}-${action}`
   routeTag: string;                  // primary route this recommendation acts on
@@ -103,6 +106,10 @@ export interface DispatchRecommendation {
   estimatedSecondsToBunch: number | null; // how soon a bunch will occur if no action
   headwayAfterAction: number | null; // predicted headway (in stops) if action taken
   generatedAt: number;               // unix ms
+  // Decision state — set by the server when a dispatcher approves or dismisses
+  status: RecommendationStatus;
+  decidedAt: number | null;          // unix ms when dispatcher acted on this recommendation
+  dismissReason: string | null;      // optional free-text reason when dismissed
 }
 
 /**

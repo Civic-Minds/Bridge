@@ -57,6 +57,30 @@ export async function resetPolicy() {
     }
 }
 
+export async function approveRecommendation(id) {
+    try {
+        const res = await fetch(`/api/recommendations/${encodeURIComponent(id)}/approve`, { method: 'POST' });
+        return await res.json();
+    } catch (e) {
+        console.error('Approve Error:', e);
+        return null;
+    }
+}
+
+export async function dismissRecommendation(id, reason = '') {
+    try {
+        const res = await fetch(`/api/recommendations/${encodeURIComponent(id)}/dismiss`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ reason: reason || undefined }),
+        });
+        return await res.json();
+    } catch (e) {
+        console.error('Dismiss Error:', e);
+        return null;
+    }
+}
+
 export async function fetchAvailableRoutes() {
     try {
         const agency = 'ttc';

@@ -2,9 +2,16 @@
 // Renders a SKATE-style dispatcher view: vehicles positioned linearly along route,
 // colored by schedule status, with gap indicators and actionable recommendations.
 
+import * as API from './api.js';
+
 let ladderContainer = null;
 let recContainer = null;
 let lastRecommendations = [];
+let onDecisionCallback = null; // called after approve/dismiss so the parent can refresh recs
+
+export function setDecisionCallback(fn) {
+    onDecisionCallback = fn;
+}
 
 export function initLadder() {
     ladderContainer = document.getElementById('ladder-container');
@@ -133,6 +140,7 @@ export function renderRecommendations(recommendations) {
 }
 
 function renderRecCard(rec) {
+    const status = rec.status ?? 'pending';
     const severityClass = rec.severity.toLowerCase(); // 'critical', 'high', 'medium'
     const isCrossRoute = rec.action === 'CONVERT_TO_LOCAL' || rec.action === 'CONVERT_TO_EXPRESS';
     const actionLabel = {
@@ -157,26 +165,56 @@ function renderRecCard(rec) {
 
     const timeStr = new Date(rec.generatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
-    // Cross-route cards show both route tags prominently
     const routeLabel = isCrossRoute && rec.partnerRouteTag
         ? `Rt ${rec.routeTag} ↔ ${rec.partnerRouteTag}`
         : `Rt ${rec.routeTag}`;
 
-    const crossRouteBadge = isCrossRoute
-        ? `<span class="rec-cross-badge">CROSS-ROUTE</span>`
-        : '';
+    const crossRouteBadge = isCrossRoute ? `<span class="rec-cross-badge">CROSS-ROUTE</span>` : '';
 
-    return `<div class="rec-card rec-${severityClass}${isCrossRoute ? ' rec-cross' : ''}">
+    // Decision state badges and buttons
+    let decisionBadge = '';
+    let actionButtons = '';
+    const escapedId = rec.id.replace(/'/g, "\\'");
+
+    if (status === 'approved') {
+        decisionBadge = `<span class="rec-decision-badge rec-approved">✓ ACCEPTED</span>`;
+    } else if (status === 'dismissed') {
+        const reasonNote = rec.dismissReason ? ` — "${rec.dismissReason}"` : '';
+        decisionBadge = `<span class="rec-decision-badge rec-dismissed">✗ DISMISSED${reasonNote}</span>`;
+    } else {
+        // pending — show action buttons
+        actionButtons = `<div class="rec-actions">
+            <button class="rec-btn rec-btn-approve" onclick="handleRecApprove('${escapedId}')">Accept</button>
+            <button class="rec-btn rec-btn-dismiss" onclick="handleRecDismiss('${escapedId}')">Dismiss</button>
+        </div>`;
+    }
+
+    const cardClass = `rec-card rec-${severityClass}${isCrossRoute ? ' rec-cross' : ''} rec-status-${status}`;
+
+    return `<div class="${cardClass}" data-rec-id="${rec.id}">
         <div class="rec-header">
             <span class="rec-action-badge rec-badge-${severityClass}">${actionLabel}</span>
             ${crossRouteBadge}
             <span class="rec-vehicle">Veh ${rec.vehicleId}</span>
             <span class="rec-route">${routeLabel}</span>
             <span class="rec-time">${timeStr}</span>
+            ${decisionBadge}
         </div>
         <div class="rec-reason">${rec.reason}</div>
         <div class="rec-details">
             ${holdStr}${bunchStr}${headwayStr}
         </div>
+        ${actionButtons}
     </div>`;
 }
+
+// Exposed globally for inline onclick handlers
+window.handleRecApprove = async function(id) {
+    await API.approveRecommendation(id);
+    if (onDecisionCallback) onDecisionCallback();
+};
+
+window.handleRecDismiss = async function(id) {
+    await API.dismissRecommendation(id);
+    if (onDecisionCallback) onDecisionCallback();
+};

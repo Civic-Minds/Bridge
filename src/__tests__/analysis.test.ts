@@ -119,7 +119,7 @@ describe('analyzeRoute — closingPairs', () => {
       makeVehicle({ id: 'v2', heading: 164, stopSequence: 7 }), // gap = 3
     ];
     const history: VehicleHistory = new Map([
-      ['v1', { stopSequence: 2, stopId: 'stop_1', status: 0, dwellPolls: 0, gapAhead: 5, inferredDir: '0' }],
+      ['v1', { stopSequence: 2, stopId: 'stop_1', status: 0, dwellSince: null, gapAhead: 5, inferredDir: '0' }],
     ]);
     const { metrics } = analyzeRoute(vehicles, history);
     expect(metrics.closingPairs).toBe(1);
@@ -131,7 +131,7 @@ describe('analyzeRoute — closingPairs', () => {
       makeVehicle({ id: 'v2', heading: 164, stopSequence: 7 }), // gap = 3
     ];
     const history: VehicleHistory = new Map([
-      ['v1', { stopSequence: 1, stopId: 'stop_1', status: 0, dwellPolls: 0, gapAhead: 3, inferredDir: '0' }],
+      ['v1', { stopSequence: 1, stopId: 'stop_1', status: 0, dwellSince: null, gapAhead: 3, inferredDir: '0' }],
     ]);
     const { metrics } = analyzeRoute(vehicles, history);
     expect(metrics.closingPairs).toBe(0);
@@ -143,25 +143,31 @@ describe('analyzeRoute — closingPairs', () => {
 // ---------------------------------------------------------------------------
 
 describe('analyzeRoute — dwellAnomalies', () => {
-  it('flags a vehicle stopped at the same stop for 3+ polls', () => {
-    const v = makeVehicle({ id: 'v1', heading: 160, stopId: 'stop_X', currentStatus: 2 });
+  it('flags a vehicle stopped ≥ 30s at the same stop', () => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    // Vehicle's reportedAt is current time; dwellSince was 45s ago → 45s elapsed → flagged
+    const v = makeVehicle({ id: 'v1', heading: 160, stopId: 'stop_X', currentStatus: 2, reportedAt: nowSec });
     const history: VehicleHistory = new Map([
-      ['v1', { stopSequence: 1, stopId: 'stop_X', status: 2, dwellPolls: 2, gapAhead: null, inferredDir: '0' }],
+      ['v1', { stopSequence: 1, stopId: 'stop_X', status: 2, dwellSince: nowSec - 45, gapAhead: null, inferredDir: '0' }],
     ]);
     const { metrics } = analyzeRoute([v], history);
     expect(metrics.dwellAnomalies).toBe(1);
   });
 
-  it('does not flag a vehicle that just stopped this poll', () => {
-    const v = makeVehicle({ id: 'v1', heading: 160, stopId: 'stop_X', currentStatus: 2 });
+  it('does not flag a vehicle that just stopped (< 30s)', () => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    // No history → dwellSince set to v.reportedAt → 0s elapsed
+    const v = makeVehicle({ id: 'v1', heading: 160, stopId: 'stop_X', currentStatus: 2, reportedAt: nowSec });
     const { metrics } = analyzeRoute([v], emptyHistory);
     expect(metrics.dwellAnomalies).toBe(0);
   });
 
-  it('resets dwell count when a vehicle moves to a new stop', () => {
-    const v = makeVehicle({ id: 'v1', heading: 160, stopId: 'stop_Y', currentStatus: 2 });
+  it('resets dwell timer when a vehicle moves to a new stop', () => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    // Vehicle is at stop_Y but history has stop_X → new stop, dwellSince resets → 0s
+    const v = makeVehicle({ id: 'v1', heading: 160, stopId: 'stop_Y', currentStatus: 2, reportedAt: nowSec });
     const history: VehicleHistory = new Map([
-      ['v1', { stopSequence: 1, stopId: 'stop_X', status: 2, dwellPolls: 5, gapAhead: null, inferredDir: '0' }],
+      ['v1', { stopSequence: 1, stopId: 'stop_X', status: 2, dwellSince: nowSec - 120, gapAhead: null, inferredDir: '0' }],
     ]);
     const { metrics } = analyzeRoute([v], history);
     expect(metrics.dwellAnomalies).toBe(0);
@@ -269,7 +275,8 @@ function makeAnalyzedVehicle(
     analysis: {
       inferredDir: heading < 180 ? '0' : '1',
       gapAhead,
-      dwellPolls: 0,
+      dwellSeconds: 0,
+      predictedBunchSeconds: null,
       anomalies: anomalies as any,
       scheduleDeviation: null,
     },

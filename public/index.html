@@ -329,6 +329,43 @@
             letter-spacing: 0.04em;
         }
 
+        /* Decision state */
+        .rec-status-approved { opacity: 0.65; }
+        .rec-status-dismissed { opacity: 0.4; }
+
+        .rec-decision-badge {
+            font-size: 0.65rem;
+            font-weight: 700;
+            padding: 2px 6px;
+            border-radius: 3px;
+            letter-spacing: 0.04em;
+            margin-left: auto;
+        }
+        .rec-approved { background: rgba(52,211,153,0.15); color: #34d399; }
+        .rec-dismissed { background: rgba(100,116,139,0.2); color: #64748b; }
+
+        .rec-actions {
+            display: flex;
+            gap: 6px;
+            margin-top: 8px;
+            padding-top: 8px;
+            border-top: 1px solid rgba(255,255,255,0.06);
+        }
+        .rec-btn {
+            font-size: 0.72rem;
+            font-weight: 600;
+            padding: 4px 12px;
+            border-radius: 4px;
+            border: none;
+            cursor: pointer;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            transition: opacity 0.15s;
+        }
+        .rec-btn:hover { opacity: 0.8; }
+        .rec-btn-approve { background: rgba(52,211,153,0.2); color: #34d399; }
+        .rec-btn-dismiss { background: rgba(100,116,139,0.15); color: #94a3b8; }
+
         /* ─── Map Area ─── */
         main { position: relative; background: #111; }
         #map { width: 100%; height: 100%; background: #0f172a; }
@@ -529,7 +566,7 @@
     <script type="module">
         import { initMap, updateMapState, startAnimationLoop } from './js/map.js';
         import { initUI, updateDashboard }                     from './js/ui.js';
-        import { initLadder, renderLadder, renderRecommendations } from './js/ladder.js';
+        import { initLadder, renderLadder, renderRecommendations, setDecisionCallback } from './js/ladder.js';
         import { fetchState, fetchRecommendations, fetchPolicy, updatePolicy, resetPolicy as apiResetPolicy } from './js/api.js';
 
         const ACTION_LABELS = {
@@ -617,28 +654,32 @@
             initMap('map');
             startAnimationLoop();
 
+            async function refreshRecs() {
+                const recData = await fetchRecommendations();
+                if (recData) {
+                    // Show pending and approved recs; hide dismissed ones from the main view
+                    const visible = (recData.recommendations ?? []).filter(r => r.status !== 'dismissed');
+                    renderRecommendations(visible);
+
+                    const hasCritical = visible.some(r => r.severity === 'CRITICAL' && r.status === 'pending');
+                    document.getElementById('tab-dispatch').classList.toggle('has-alert', hasCritical);
+                    document.getElementById('stat-recs').innerText = visible.filter(r => r.status === 'pending').length;
+                }
+            }
+
+            // After a dispatcher decision, immediately re-fetch recs so the card updates
+            setDecisionCallback(refreshRecs);
+
             async function loop() {
-                const [state, recData] = await Promise.all([
+                const [state] = await Promise.all([
                     fetchState(),
-                    fetchRecommendations(),
+                    refreshRecs(),
                 ]);
 
                 if (state) {
                     updateMapState(state);
-                    updateDashboard(state, recData);
+                    updateDashboard(state, null);
                     renderLadder(state);
-                }
-
-                if (recData) {
-                    renderRecommendations(recData.recommendations ?? []);
-
-                    // Flash the dispatch tab if there are critical recommendations
-                    const hasCritical = (recData.recommendations ?? []).some(r => r.severity === 'CRITICAL');
-                    const dispatchBtn = document.getElementById('tab-dispatch');
-                    dispatchBtn.classList.toggle('has-alert', hasCritical);
-
-                    // Update actions stat
-                    document.getElementById('stat-recs').innerText = recData.count ?? 0;
                 }
             }
 
