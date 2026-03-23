@@ -314,4 +314,51 @@ export function queryAnomalyHistory(
   }));
 }
 
+export interface AnomalyHistoryHourRow {
+  hourBucket: number;   // unix ms for the start of the hour
+  routeTag: string;
+  anomalyType: string;
+  eventCount: number;
+}
+
+const stmtQueryHistoryHourly = db.prepare(`
+  SELECT
+    (started_at / 3600000) * 3600000  AS hour_bucket,
+    route_tag,
+    anomaly_type,
+    COUNT(*)                           AS event_count
+  FROM anomaly_events
+  WHERE started_at >= ? AND started_at <= ?
+  GROUP BY hour_bucket, route_tag, anomaly_type
+  ORDER BY hour_bucket, route_tag
+`);
+
+const stmtQueryHistoryHourlyRoute = db.prepare(`
+  SELECT
+    (started_at / 3600000) * 3600000  AS hour_bucket,
+    route_tag,
+    anomaly_type,
+    COUNT(*)                           AS event_count
+  FROM anomaly_events
+  WHERE started_at >= ? AND started_at <= ? AND route_tag = ?
+  GROUP BY hour_bucket, route_tag, anomaly_type
+  ORDER BY hour_bucket
+`);
+
+export function queryAnomalyHistoryHourly(
+  startMs: number,
+  endMs: number,
+  routeTag?: string,
+): AnomalyHistoryHourRow[] {
+  const rows = routeTag
+    ? stmtQueryHistoryHourlyRoute.all(startMs, endMs, routeTag)
+    : stmtQueryHistoryHourly.all(startMs, endMs);
+  return (rows as Array<Record<string, unknown>>).map(r => ({
+    hourBucket: r.hour_bucket as number,
+    routeTag: r.route_tag as string,
+    anomalyType: r.anomaly_type as string,
+    eventCount: r.event_count as number,
+  }));
+}
+
 log.info('DB', 'opened', { path: DB_PATH });

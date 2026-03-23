@@ -1,6 +1,7 @@
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import { analyzeRoute, buildPredictionIndex, generateRecommendations, generateCrossRouteRecommendations, getDistance } from './analysis';
 import { Vehicle, VehicleHistory, RouteState, ConflictZone, DispatchRecommendation, DispatchPolicy, DEFAULT_POLICY, GtfsStop } from './types';
 import { loadGtfs, GtfsRouteData } from './gtfs';
@@ -8,7 +9,7 @@ import { log } from './logger';
 import {
   saveDecision, loadRecentDecisions, seedOpenAnomalies, reconcileAnomalies,
   createInstruction, loadOpenInstructions, resolveInstruction, getInstruction,
-  queryAnomalyHistory, StoredInstruction,
+  queryAnomalyHistory, queryAnomalyHistoryHourly, StoredInstruction,
 } from './db';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -123,6 +124,13 @@ const recDecisions = new Map<string, { status: 'approved' | 'dismissed'; decided
 const openInstructions = new Map<string, StoredInstruction>();
 // Resolved instruction outcomes: kept for the session so applyDecisions can surface them.
 const resolvedOutcomes = new Map<string, 'complied' | 'non_complied' | 'expired'>();
+
+// Outbound webhook: when configured, Bridge POSTs a signed instruction payload to this
+// URL on every approval. Agencies connect this to their MDT, driver app, or CAD system.
+const webhookConfig: { url: string | null; secret: string | null } = { url: null, secret: null };
+
+// Stable instance ID included in webhook payloads so the receiving system can identify the source.
+const BRIDGE_INSTANCE_ID = crypto.randomUUID();
 
 // Server-sent events: connected dispatcher clients
 const sseClients = new Set<Response>();
@@ -321,6 +329,38 @@ async function poll(): Promise<void> {
     healthState.consecutiveErrors++;
     healthState.lastError = (err as Error).message;
     log.error('Poll', 'feed error', { err: (err as Error).message, consecutiveErrors: healthState.consecutiveErrors });
+  }
+}
+
+/**
+ * Deliver an approved instruction payload to the configured webhook URL.
+ *
+ * Fire-and-forget: called without await so approval responses are never delayed.
+ * If a secret is configured, the request body is HMAC-SHA256 signed and the
+ * digest is sent as `X-Bridge-Signature: sha256=<hex>` so the receiver can verify
+ * the payload came from this Bridge instance.
+ */
+async function deliverWebhook(payload: Record<string, unknown>): Promise<void> {
+  if (!webhookConfig.url) return;
+  const body = JSON.stringify(payload);
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'User-Agent': 'Bridge-Dispatch/1.0',
+    'X-Bridge-Instance': BRIDGE_INSTANCE_ID,
+  };
+  if (webhookConfig.secret) {
+    const sig = crypto.createHmac('sha256', webhookConfig.secret).update(body).digest('hex');
+    headers['X-Bridge-Signature'] = `sha256=${sig}`;
+  }
+  try {
+    const res = await fetch(webhookConfig.url, { method: 'POST', headers, body });
+    if (!res.ok) {
+      log.warn('Webhook', 'delivery failed', { url: webhookConfig.url, status: res.status });
+    } else {
+      log.info('Webhook', 'delivered', { url: webhookConfig.url, status: res.status, recId: payload.recommendationId });
+    }
+  } catch (err) {
+    log.error('Webhook', 'delivery error', { url: webhookConfig.url, err: (err as Error).message });
   }
 }
 
@@ -537,6 +577,23 @@ app.post('/api/recommendations/:id/approve', (req: Request, res: Response) => {
         };
         openInstructions.set(id, instr);
         log.info('Instruction', 'created', { recId: id, vehicleId: rec.vehicleId, holdSecs, atStop: rec.atStop });
+
+        // Fire webhook asynchronously — do not await, never delay the approval response
+        void deliverWebhook({
+          schemaVersion: '1',
+          type: 'dispatch_instruction',
+          recommendationId: id,
+          vehicleId: rec.vehicleId,
+          routeTag: rec.routeTag,
+          action: rec.action,
+          holdSeconds: holdSecs,
+          atStop: rec.atStop,
+          severity: rec.severity,
+          reason: rec.reason,
+          issuedAt: approvedAt,
+          expiresAt,
+          bridgeInstanceId: BRIDGE_INSTANCE_ID,
+        });
       }
     }
   }
@@ -605,6 +662,43 @@ app.post('/api/policy/reset', (_req: Request, res: Response) => {
   res.json({ success: true, policy: activePolicy });
 });
 
+// Webhook configuration endpoints
+// GET  /api/webhook        — returns current config (secret masked)
+// POST /api/webhook        — set { url, secret? }; pass secret: null to clear it
+// DELETE /api/webhook      — disable webhook entirely
+
+app.get('/api/webhook', (_req: Request, res: Response) => {
+  res.json({
+    configured: webhookConfig.url !== null,
+    url: webhookConfig.url,
+    hasSecret: webhookConfig.secret !== null,
+    bridgeInstanceId: BRIDGE_INSTANCE_ID,
+  });
+});
+
+app.post('/api/webhook', (req: Request, res: Response) => {
+  const body = req.body as { url?: unknown; secret?: unknown };
+  if (!body.url || typeof body.url !== 'string') {
+    res.status(400).json({ error: 'url is required and must be a string' });
+    return;
+  }
+  try { new URL(body.url); } catch {
+    res.status(400).json({ error: 'url must be a valid URL' });
+    return;
+  }
+  webhookConfig.url = body.url;
+  webhookConfig.secret = typeof body.secret === 'string' ? body.secret : null;
+  log.info('Webhook', 'configured', { url: webhookConfig.url, hasSecret: webhookConfig.secret !== null });
+  res.json({ success: true, configured: true, url: webhookConfig.url, hasSecret: webhookConfig.secret !== null });
+});
+
+app.delete('/api/webhook', (_req: Request, res: Response) => {
+  webhookConfig.url = null;
+  webhookConfig.secret = null;
+  log.info('Webhook', 'disabled');
+  res.json({ success: true, configured: false });
+});
+
 app.post('/api/config/active-routes', (req: Request, res: Response) => {
   const { routes } = req.body as { routes?: unknown };
   if (!routes || !Array.isArray(routes)) {
@@ -636,29 +730,30 @@ app.get('/api/stream', (req: Request, res: Response) => {
   });
 });
 
-// History endpoint — anomaly event counts within a time window, grouped by route and type.
-// GET /api/history?start=<unix_ms>&end=<unix_ms>&route=<tag>
+// History endpoint — anomaly event counts within a time window.
+// GET /api/history?start=<unix_ms>&end=<unix_ms>&route=<tag>&groupBy=hour
+//   groupBy=hour  — returns per-hour buckets (default: totals only)
 // Defaults to the past 24 hours when start/end are omitted.
 app.get('/api/history', (req: Request, res: Response) => {
   const now = Date.now();
   const endMs   = parseInt(req.query.end   as string, 10) || now;
   const startMs = parseInt(req.query.start as string, 10) || endMs - 24 * 60 * 60 * 1000;
-  const route   = typeof req.query.route === 'string' ? req.query.route : undefined;
+  const route   = typeof req.query.route   === 'string' ? req.query.route   : undefined;
+  const groupBy = typeof req.query.groupBy === 'string' ? req.query.groupBy : undefined;
 
   if (startMs >= endMs) {
     res.status(400).json({ error: 'start must be before end' });
     return;
   }
 
+  if (groupBy === 'hour') {
+    const rows = queryAnomalyHistoryHourly(startMs, endMs, route);
+    res.json({ timestamp: now, startMs, endMs, route: route ?? 'all', groupBy: 'hour', count: rows.length, history: rows });
+    return;
+  }
+
   const rows = queryAnomalyHistory(startMs, endMs, route);
-  res.json({
-    timestamp: now,
-    startMs,
-    endMs,
-    route: route ?? 'all',
-    count: rows.length,
-    history: rows,
-  });
+  res.json({ timestamp: now, startMs, endMs, route: route ?? 'all', count: rows.length, history: rows });
 });
 
 // Health endpoint — for uptime monitoring and feed staleness checking.
