@@ -10,6 +10,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as readline from 'readline';
+import { log } from './logger';
 
 export interface GtfsStop {
   id: string;
@@ -100,7 +101,7 @@ export async function loadGtfs(
       lon:  parseFloat(row.stop_lon),
     });
   });
-  console.log(`[GTFS] Loaded ${stopsById.size} stops`);
+  log.info('GTFS', 'stops loaded', { count: stopsById.size });
 
   // ── 2. trips.txt ─────────────────────────────────────────────────────────────
   // Filter to our routes; record shape_id per trip.
@@ -112,9 +113,7 @@ export async function loadGtfs(
     if (!routeToTrips.has(row.route_id)) routeToTrips.set(row.route_id, []);
     routeToTrips.get(row.route_id)!.push(row.trip_id);
   });
-  console.log(
-    `[GTFS] Found trips for routes: ${[...routeToTrips.keys()].join(', ')}`,
-  );
+  log.info('GTFS', 'trips indexed', { routes: [...routeToTrips.keys()].join(', ') });
 
   // ── 3. shapes.txt ────────────────────────────────────────────────────────────
   // Only load shapes referenced by our trips.
@@ -129,7 +128,7 @@ export async function loadGtfs(
       seq: parseInt(row.shape_pt_sequence, 10),
     });
   });
-  console.log(`[GTFS] Loaded ${shapePoints.size} shapes`);
+  log.info('GTFS', 'shapes loaded', { count: shapePoints.size });
 
   // ── 4. stop_times.txt ────────────────────────────────────────────────────────
   // Large file — skip rows that don't belong to our trips.
@@ -185,9 +184,7 @@ export async function loadGtfs(
     }
 
     result.set(routeId, { paths, stops });
-    console.log(
-      `[GTFS] Route ${routeId}: ${paths.length} shape(s), ${stops.length} stops`,
-    );
+    log.info('GTFS', 'route assembled', { routeId, shapes: paths.length, stops: stops.length });
   }
 
   return result;
