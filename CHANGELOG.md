@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [1.6.0] - 2026-03-22
 
 ### Added
 - **Recommendation feedback loop** — `GET /api/feedback?window=<ms>&route=<tag>` returns dispatcher decision rates (approve/dismiss counts + accept %) per route and action type over a configurable window (default 7 days). Powered by the existing `rec_decisions` table. Visible in the Trends tab as a colour-coded table below the hour chart — rows with <40% accept rate on ≥5 decisions are flagged red.
