@@ -15,9 +15,8 @@ The current system detects problems and surfaces recommendations. The full loop 
 - [ ] **Structured operator instruction payload** — on approval, produce:
   `{ vehicleId, action, parameter, atStop, expiresAt, authorizedBy, recommendationId }`.
   This is the message that goes to the in-vehicle display or CAD system.
-- [ ] **Outbound webhook** — configurable endpoint Bridge POSTs approved instructions to.
-  Agencies connect this to their MDT, driver app, or CAD. Bridge doesn't own the delivery
-  channel; it produces the right payload and hands it off.
+- [x] **Outbound webhook** — `POST /api/webhook` sets a URL; Bridge delivers a signed
+  instruction payload on every approval. HMAC-SHA256 signing optional.
 - [x] **Instruction outcome tracking** — after issuing a HOLD, did the vehicle actually stop?
   After a SHORT_TURN, did the vehicle reverse? Close the loop by watching the vehicle's
   next position reports and flagging if the instruction wasn't followed.
@@ -92,8 +91,8 @@ All state is in-memory. No history survives a restart.
 
 - [x] **SQLite persistence** (`src/db.ts`) — `rec_decisions`, `anomaly_events`, and `instructions`
   tables. No external dependency (uses built-in `node:sqlite`).
-- [ ] **Trend charts** — 24-hour bar chart in sidebar: bunching frequency per hour per route.
-  Distinguishes current incident from chronic pattern.
+- [x] **Trend charts** — 24-hour stacked bar chart in Trends tab: anomaly events per hour
+  coloured by type. Route filter. Powered by `GET /api/history?groupBy=hour`.
 - [x] **History API** — `GET /api/history?route=504&start=<ts>&end=<ts>` — event counts and
   average durations from `anomaly_events`, grouped by route and anomaly type.
 - [ ] **Baseline learning** — after 2+ weeks of data, compute expected bunching rates by
