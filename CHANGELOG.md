@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.0] - 2026-03-22
+
+### Added
+- **`src/logger.ts`** — structured JSON logger. Every log line is a single JSON object: `{ ts, level, component, msg, ...meta }`. Info/warn/debug to stdout, error to stderr. Compatible with Loki, Datadog, CloudWatch without a parser sidecar.
+- **`src/db.ts`** — SQLite persistence via `node:sqlite` (built-in, no new dependency). Two tables: `rec_decisions` (dispatcher decisions survive server restarts within the 5-minute TTL) and `anomaly_events` (open/close records per vehicle anomaly, enables future trend charts and baseline learning). Decisions are loaded from DB on boot and upserted on every approve/dismiss.
+- **`GET /api/stream`** — server-sent events endpoint. After every successful poll, Bridge pushes a `data: <json>` message containing the full state + recommendations to all connected clients. Latency from data availability to dispatcher screen drops from up to 4 seconds to approximately one poll interval.
+- **`GET /api/history`** — stub endpoint for future trend/incident queries (`start`, `end`, `route` params).
+- **Anomaly event tracking** — `reconcileAnomalies()` called after each route analysis; opens a DB row when an anomaly first appears, closes it when it clears. Powers the `anomaly_events` table.
+
+### Changed
+- **Frontend polling replaced with EventSource**: the 4-second `setInterval` loop is gone. The page opens an `EventSource('/api/stream')` connection; state and recommendations are rendered on each server push. An initial `Promise.all([fetchState, fetchRecommendations])` provides the first render before the first push arrives.
+- **All `console.*` calls replaced** with `log.*` (structured JSON) across `src/server.ts`, `src/analysis.ts`, and `scripts/fetch-gtfs.ts`.
+- **Dispatcher decisions now persisted to SQLite**: `saveDecision()` is called on every approve/dismiss; `loadRecentDecisions()` restores the in-memory map on boot. A server restart no longer loses pending decisions.
+- **`GET /health`** now includes `sseClients` count.
+- **`package.json` version** updated to `1.5.0` to reflect actual release state.
+- **`docs/ROADMAP_TECHNICAL.md`** updated to mark all completed items.
+
+---
+
 ## [1.4.0] - 2026-03-22
 
 ### Added

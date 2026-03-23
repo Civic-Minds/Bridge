@@ -5,6 +5,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import AdmZip from 'adm-zip';
+import { log } from '../src/logger';
 
 const DATA_DIR  = path.join(__dirname, '..', 'data');
 const GTFS_DIR  = path.join(DATA_DIR, 'gtfs');
@@ -24,14 +25,14 @@ function isStale(): boolean {
 
 async function main(): Promise<void> {
   if (!isStale()) {
-    console.log('[fetch-gtfs] GTFS data present and fresh — skipping download.');
+    log.info('fetch-gtfs', 'data present and fresh — skipping download', { dir: GTFS_DIR });
     return;
   }
 
   const reason = fs.existsSync(SENTINEL)
     ? `data is older than ${MAX_GTFS_AGE_DAYS} days`
     : 'data missing';
-  console.log(`[fetch-gtfs] Fetching GTFS from Toronto Open Data (${reason})...`);
+  log.info('fetch-gtfs', 'fetching from Toronto Open Data', { reason });
   fs.mkdirSync(GTFS_DIR, { recursive: true });
 
   const metaResp = await fetch(CKAN_PACKAGE_URL);
@@ -43,7 +44,7 @@ async function main(): Promise<void> {
   );
   if (!resource) throw new Error('Could not find GTFS ZIP in Toronto Open Data package.');
 
-  console.log(`[fetch-gtfs] Downloading from ${resource.url}`);
+  log.info('fetch-gtfs', 'downloading zip', { url: resource.url });
   const zipResp = await fetch(resource.url);
   if (!zipResp.ok) throw new Error(`Download failed: ${zipResp.status}`);
 
@@ -51,10 +52,10 @@ async function main(): Promise<void> {
   const zip = new AdmZip(buffer);
   zip.extractAllTo(GTFS_DIR, true);
 
-  console.log(`[fetch-gtfs] Extracted ${zip.getEntries().length} files to ${GTFS_DIR}`);
+  log.info('fetch-gtfs', 'extraction complete', { files: zip.getEntries().length, dir: GTFS_DIR });
 }
 
 main().catch(err => {
-  console.error('[fetch-gtfs] Fatal:', err instanceof Error ? err.message : err);
+  log.error('fetch-gtfs', 'fatal error', { err: err instanceof Error ? err.message : String(err) });
   process.exit(1);
 });

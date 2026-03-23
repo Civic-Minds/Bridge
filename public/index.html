@@ -648,43 +648,59 @@
             document.getElementById(`panel-${name}`).classList.add('active');
         };
 
+        function applyStateUpdate(data) {
+            if (data.routes) {
+                updateMapState(data);
+                updateDashboard(data, null);
+                renderLadder(data);
+            }
+            if (data.recommendations) {
+                const visible = data.recommendations.filter(r => r.status !== 'dismissed');
+                renderRecommendations(visible);
+                const hasCritical = visible.some(r => r.severity === 'CRITICAL' && r.status === 'pending');
+                document.getElementById('tab-dispatch').classList.toggle('has-alert', hasCritical);
+                document.getElementById('stat-recs').innerText = visible.filter(r => r.status === 'pending').length;
+            }
+        }
+
+        async function refreshRecs() {
+            const recData = await fetchRecommendations();
+            if (recData) {
+                const visible = (recData.recommendations ?? []).filter(r => r.status !== 'dismissed');
+                renderRecommendations(visible);
+                const hasCritical = visible.some(r => r.severity === 'CRITICAL' && r.status === 'pending');
+                document.getElementById('tab-dispatch').classList.toggle('has-alert', hasCritical);
+                document.getElementById('stat-recs').innerText = visible.filter(r => r.status === 'pending').length;
+            }
+        }
+
         async function init() {
             initUI();
             initLadder();
             initMap('map');
             startAnimationLoop();
 
-            async function refreshRecs() {
-                const recData = await fetchRecommendations();
-                if (recData) {
-                    // Show pending and approved recs; hide dismissed ones from the main view
-                    const visible = (recData.recommendations ?? []).filter(r => r.status !== 'dismissed');
-                    renderRecommendations(visible);
-
-                    const hasCritical = visible.some(r => r.severity === 'CRITICAL' && r.status === 'pending');
-                    document.getElementById('tab-dispatch').classList.toggle('has-alert', hasCritical);
-                    document.getElementById('stat-recs').innerText = visible.filter(r => r.status === 'pending').length;
-                }
-            }
-
             // After a dispatcher decision, immediately re-fetch recs so the card updates
             setDecisionCallback(refreshRecs);
 
-            async function loop() {
-                const [state] = await Promise.all([
-                    fetchState(),
-                    refreshRecs(),
-                ]);
+            // Initial load: fetch state + recs immediately on page open
+            const [state, recData] = await Promise.all([fetchState(), fetchRecommendations()]);
+            if (state) applyStateUpdate({ ...state, recommendations: recData?.recommendations ?? [] });
 
-                if (state) {
-                    updateMapState(state);
-                    updateDashboard(state, null);
-                    renderLadder(state);
+            // SSE: server pushes a full state+recs payload after every successful poll.
+            // This replaces the 4-second polling loop — updates arrive within one poll interval.
+            const evtSource = new EventSource('/api/stream');
+            evtSource.onmessage = (event) => {
+                try {
+                    applyStateUpdate(JSON.parse(event.data));
+                } catch (e) {
+                    console.error('SSE parse error', e);
                 }
-            }
-
-            setInterval(loop, 4000);
-            loop();
+            };
+            evtSource.onerror = () => {
+                // Browser will auto-reconnect. Log quietly; don't disrupt the UI.
+                console.warn('SSE connection lost — reconnecting...');
+            };
         }
 
         init();

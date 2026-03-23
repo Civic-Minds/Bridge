@@ -10,9 +10,8 @@ by impact vs. effort. This is a living document — priorities shift, but themes
 The current system detects problems and surfaces recommendations. The full loop is:
 **detect → recommend → approve → instruct → confirm**. Bridge currently stops at recommend.
 
-- [ ] **Recommendation approval/dismiss UI** — dispatcher clicks Accept or Dismiss on
-  each action card. Dismissed recommendations are logged with reason (optional free-text).
-  Accepted recommendations transition to an instruction.
+- [x] **Recommendation approval/dismiss UI** — Accept/Dismiss buttons on each pending card.
+  Dismissed recs hidden; approved recs dimmed. 5-minute TTL before re-surfacing.
 - [ ] **Structured operator instruction payload** — on approval, produce:
   `{ vehicleId, action, parameter, atStop, expiresAt, authorizedBy, recommendationId }`.
   This is the message that goes to the in-vehicle display or CAD system.
@@ -35,17 +34,15 @@ The current system detects problems and surfaces recommendations. The full loop 
 The current algorithm is reliable for detection but uses rough estimates for
 intervention sizing. Better calibration improves recommendation accuracy.
 
-- [ ] **Time-based headway** — replace stop-sequence gap (integer stops) with seconds-based
+- [x] **Time-based headway** — replace stop-sequence gap (integer stops) with seconds-based
   headway using vehicle speed and distance to next stop. Makes hold times significantly
   more accurate on routes with uneven stop spacing.
-- [ ] **Predicted bunching (look-ahead)** — use current vehicle velocity to project positions
-  5 and 10 minutes ahead. Flag predicted bunches before they form. Current detection is
-  reactive; look-ahead makes it proactive.
-- [ ] **`reportedAt`-based dwell timing** — replace poll-count dwell proxy with actual
-  elapsed time using `vehicle.reportedAt` timestamps. More accurate, poll-interval-independent.
-- [ ] **Per-route `secondsPerStop` calibration** — replace the global 45s constant with
-  route-specific values derived from historical travel times between stops. Feeds from
-  static GTFS stop spacing + observed average speeds.
+- [x] **Predicted bunching (look-ahead)** — `predictedBunchSeconds` derived from gap-closing
+  rate per poll. Used in HOLD recommendation reason text and severity tier.
+- [x] **`reportedAt`-based dwell timing** — `dwellSince` timestamp in VehicleRecord; `dwellSeconds`
+  in VehicleAnalysis. Poll-interval-independent, accurate to the second.
+- [x] **Per-route `secondsPerStop` calibration** — haversine-averaged stop spacing from GTFS
+  geometry, passed to both recommendation generators each poll.
 - [ ] **Passenger load weighting** — if APC (automatic passenger counter) data is available,
   weight recommendation urgency by load. A bunched full vehicle outranks a bunched empty one.
 - [ ] **Historical baseline** — track average bunching frequency and headway variance by
@@ -59,13 +56,11 @@ intervention sizing. Better calibration improves recommendation accuracy.
 Route paths and stop coordinates are currently unpopulated (`stops: []`, `paths: []`).
 This limits map quality and makes geographic algorithms approximate.
 
-- [ ] **Static GTFS loader** (`src/gtfs.ts`) — parse `shapes.txt`, `stops.txt`, and
-  `stop_times.txt` at server startup. TTC static GTFS is publicly available, no auth needed.
-- [ ] **Route polylines on map** — render actual route geometry instead of placeholder lines.
-  Vehicles snap to the nearest point on their route path.
-- [ ] **Stop markers** — show stops on map; highlight stops with active dwell anomalies.
-- [ ] **Per-route stop spacing** — pre-compute distances between consecutive stops for each
-  route. Feeds into time-based headway and per-route `secondsPerStop` calibration.
+- [x] **Static GTFS loader** (`src/gtfs.ts`) — parses `shapes.txt`, `stops.txt`, `trips.txt`,
+  and `stop_times.txt` at server startup, filtered to monitored routes.
+- [x] **Route polylines on map** — actual TTC shape geometry from `shapes.txt`.
+- [x] **Stop markers** — circle markers with hover tooltips from ordered GTFS stop sequence.
+- [x] **Per-route stop spacing** — haversine-averaged consecutive stop distances per route.
 - [ ] **Shared stop detection for corridor pairs** — identify which stops are shared between
   a local and express route vs. local-only. Makes CONVERT_TO_LOCAL recommendations precise:
   "vehicle will serve stops X, Y, Z which the express skips."
@@ -129,11 +124,11 @@ decisions depend on context Bridge doesn't have yet.
 
 ## Theme 7 — Infrastructure
 
-- [ ] **WebSocket / SSE push** — replace 4-second frontend polling with server-sent events.
-  Reduces CRITICAL alert latency from up to 4s to near-real-time.
-- [ ] **Health endpoint** — `GET /health` returns feed staleness, last poll timestamp,
-  consecutive error count. For uptime monitoring.
-- [ ] **Structured logging** — replace `console.log` with structured JSON logs (timestamp,
-  level, route, event type). Enables log aggregation and production alerting.
+- [x] **WebSocket / SSE push** — `GET /api/stream` broadcasts state + recs after every poll.
+  Frontend uses EventSource; CRITICAL alerts arrive within one poll interval.
+- [x] **Health endpoint** — `GET /health`: status, uptime, poll age, consecutive errors,
+  SSE client count. HTTP 503 on 3+ consecutive failures.
+- [x] **Structured logging** — `src/logger.ts` emits JSON lines (ts, level, component, msg,
+  meta). All console.* replaced throughout server, analysis, and scripts.
 - [ ] **Multi-instance state** — current in-memory state prevents horizontal scaling.
   Add Redis adapter so multiple Bridge instances share state behind a load balancer.

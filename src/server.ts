@@ -4,6 +4,8 @@ import * as path from 'path';
 import { analyzeRoute, buildPredictionIndex, generateRecommendations, generateCrossRouteRecommendations, getDistance } from './analysis';
 import { Vehicle, VehicleHistory, RouteState, ConflictZone, DispatchRecommendation, DispatchPolicy, DEFAULT_POLICY, GtfsStop } from './types';
 import { loadGtfs, GtfsRouteData } from './gtfs';
+import { log } from './logger';
+import { saveDecision, loadRecentDecisions, seedOpenAnomalies, reconcileAnomalies } from './db';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const GtfsRealtimeBindings = require('gtfs-realtime-bindings');
@@ -107,10 +109,13 @@ let gtfsData: Map<string, GtfsRouteData> = new Map();
 // Average stop spacing (metres) per route, derived from GTFS geometry at startup
 let routeSpacing: Map<string, number> = new Map();
 
-// Dispatcher decisions: keyed by recommendation ID, persisted across polls.
+// Dispatcher decisions: keyed by recommendation ID, persisted across polls and restarts (via SQLite).
 // After DECISION_TTL_MS a dismissed/approved rec becomes surfaceable again if the condition persists.
 const DECISION_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const recDecisions = new Map<string, { status: 'approved' | 'dismissed'; decidedAt: number; dismissReason: string | null }>();
+
+// Server-sent events: connected dispatcher clients
+const sseClients = new Set<Response>();
 
 // Health tracking
 const healthState = {
@@ -119,6 +124,7 @@ const healthState = {
   lastPollSuccess: true,
   consecutiveErrors: 0,
   lastError: null as string | null,
+  sseClients: 0,
 };
 
 function initRoutes(): void {
@@ -140,7 +146,7 @@ function initRoutes(): void {
     systemRecommendations[tag] = [];
     vehicleHistory[tag] = new Map();
   }
-  console.log(`[Init] Routes initialized: ${CONFIG.routes.join(', ')}`);
+  log.info('Init', 'routes initialized', { routes: CONFIG.routes });
 }
 
 /**
@@ -263,6 +269,11 @@ async function poll(): Promise<void> {
       // Pass real GTFS stop spacing so secondsPerStop reflects actual street geometry.
       const recs = generateRecommendations(tag, vehicles, POLL_INTERVAL_MS, activePolicy, routeSpacing.get(tag));
       systemRecommendations[tag] = enrichWithLoopData(recs, vehicles, tag);
+
+      // Persist anomaly event transitions to SQLite
+      for (const v of vehicles) {
+        reconcileAnomalies(tag, v.id, v.analysis.anomalies as string[], now);
+      }
     }
 
     // Cross-route recommendations: local/express corridor substitutions.
@@ -272,19 +283,20 @@ async function poll(): Promise<void> {
     systemRecommendations['_cross_route'] = crossRouteRecs;
 
     const totalRecs = Object.values(systemRecommendations).reduce((s, r) => s + r.length, 0);
-    console.log(
-      `[Poll] ${new Date().toLocaleTimeString()} — ${totalVehicles} vehicles | ` +
-      CONFIG.routes.map(t => {
-        const m = systemState[t]?.metrics;
-        return `${t}: ${m?.bunchingPairs}b ${m?.closingPairs}c ${m?.dwellAnomalies}d ${m?.largeGaps}g`;
-      }).join('  ') +
-      (totalRecs > 0 ? ` | ${totalRecs} recommendation${totalRecs > 1 ? 's' : ''}` : '')
-    );
+    const routeMetrics = Object.fromEntries(CONFIG.routes.map(t => {
+      const m = systemState[t]?.metrics;
+      return [t, { b: m?.bunchingPairs, c: m?.closingPairs, d: m?.dwellAnomalies, g: m?.largeGaps }];
+    }));
+    log.info('Poll', 'vehicles updated', { vehicles: totalVehicles, recs: totalRecs, routes: routeMetrics });
 
     healthState.lastPollAt = Date.now();
     healthState.lastPollSuccess = true;
     healthState.consecutiveErrors = 0;
     healthState.lastError = null;
+    healthState.sseClients = sseClients.size;
+
+    // Push state to all connected SSE clients
+    broadcastPoll();
 
     // Evict stale decisions so a dismissed rec eventually re-surfaces if the condition persists
     const now2 = Date.now();
@@ -295,7 +307,29 @@ async function poll(): Promise<void> {
     healthState.lastPollSuccess = false;
     healthState.consecutiveErrors++;
     healthState.lastError = (err as Error).message;
-    console.error('[Poll] Error:', (err as Error).message);
+    log.error('Poll', 'feed error', { err: (err as Error).message, consecutiveErrors: healthState.consecutiveErrors });
+  }
+}
+
+/**
+ * Push the current system state + recommendations to all connected SSE clients.
+ * Called at the end of every successful poll so dispatchers see updates in real time
+ * without any client-side polling.
+ */
+function broadcastPoll(): void {
+  if (sseClients.size === 0) return;
+  const recommendations = applyDecisions(Object.values(systemRecommendations).flat());
+  const payload = JSON.stringify({
+    type: 'state',
+    agency: 'ttc',
+    timestamp: Date.now(),
+    routes: systemState,
+    zones: CONFLICT_ZONES,
+    recommendations,
+  });
+  const msg = `data: ${payload}\n\n`;
+  for (const client of sseClients) {
+    (client as unknown as { write: (s: string) => void }).write(msg);
   }
 }
 
@@ -313,12 +347,24 @@ async function boot(): Promise<void> {
       }
       routeSpacing.set(tag, total / (stops.length - 1));
     }
-    console.log('[GTFS] Stop spacing (m):', Object.fromEntries(
+    log.info('GTFS', 'stop spacing computed', { spacingM: Object.fromEntries(
       [...routeSpacing.entries()].map(([k, v]) => [k, Math.round(v)])
-    ));
+    ) });
   } catch (err) {
-    console.warn('[GTFS] Failed to load static data — routes will have no paths or stops:', (err as Error).message);
+    log.warn('GTFS', 'failed to load static data — routes will have no paths or stops', { err: (err as Error).message });
   }
+  // Restore dispatcher decisions from DB so a restart doesn't lose recent approvals/dismissals
+  const storedDecisions = loadRecentDecisions(DECISION_TTL_MS);
+  for (const d of storedDecisions) {
+    recDecisions.set(d.recId, { status: d.status, decidedAt: d.decidedAt, dismissReason: d.dismissReason });
+  }
+  if (storedDecisions.length > 0) {
+    log.info('Boot', 'restored decisions from DB', { count: storedDecisions.length });
+  }
+
+  // Seed open-anomaly state from DB so we don't create duplicate open rows
+  seedOpenAnomalies();
+
   initRoutes();
   void poll();
   setInterval(() => void poll(), POLL_INTERVAL_MS);
@@ -394,8 +440,13 @@ app.get('/api/recommendations/:routeTag', (req: Request, res: Response) => {
 // Approve a recommendation — dispatcher has accepted and will action it
 app.post('/api/recommendations/:id/approve', (req: Request, res: Response) => {
   const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-  recDecisions.set(id, { status: 'approved', decidedAt: Date.now(), dismissReason: null });
-  console.log(`[Decision] APPROVED: ${id}`);
+  const approvedAt = Date.now();
+  recDecisions.set(id, { status: 'approved', decidedAt: approvedAt, dismissReason: null });
+  // Find the rec to get vehicle/route context for DB storage
+  const allRecs = Object.values(systemRecommendations).flat();
+  const rec = allRecs.find(r => r.id === id);
+  if (rec) saveDecision(id, rec.action, rec.vehicleId, rec.routeTag, 'approved', approvedAt, null);
+  log.info('Decision', 'approved', { id, vehicleId: rec?.vehicleId, routeTag: rec?.routeTag });
   res.json({ success: true, id, status: 'approved' });
 });
 
@@ -404,8 +455,12 @@ app.post('/api/recommendations/:id/dismiss', (req: Request, res: Response) => {
   const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const reason = (req.body as { reason?: unknown }).reason;
   const dismissReason = typeof reason === 'string' ? reason : null;
-  recDecisions.set(id, { status: 'dismissed', decidedAt: Date.now(), dismissReason });
-  console.log(`[Decision] DISMISSED: ${id}${dismissReason ? ` — "${dismissReason}"` : ''}`);
+  const dismissedAt = Date.now();
+  recDecisions.set(id, { status: 'dismissed', decidedAt: dismissedAt, dismissReason });
+  const allRecsD = Object.values(systemRecommendations).flat();
+  const recD = allRecsD.find(r => r.id === id);
+  if (recD) saveDecision(id, recD.action, recD.vehicleId, recD.routeTag, 'dismissed', dismissedAt, dismissReason);
+  log.info('Decision', 'dismissed', { id, reason: dismissReason, vehicleId: recD?.vehicleId, routeTag: recD?.routeTag });
   res.json({ success: true, id, status: 'dismissed', dismissReason });
 });
 
@@ -446,13 +501,13 @@ app.post('/api/policy', (req: Request, res: Response) => {
     policyNotes: body.policyNotes ?? activePolicy.policyNotes,
   };
 
-  console.log('[Policy] Updated:', JSON.stringify(activePolicy));
+  log.info('Policy', 'updated', { policy: activePolicy });
   res.json({ success: true, policy: activePolicy });
 });
 
 app.post('/api/policy/reset', (_req: Request, res: Response) => {
   activePolicy = { ...DEFAULT_POLICY };
-  console.log('[Policy] Reset to defaults');
+  log.info('Policy', 'reset to defaults');
   res.json({ success: true, policy: activePolicy });
 });
 
@@ -465,6 +520,35 @@ app.post('/api/config/active-routes', (req: Request, res: Response) => {
   CONFIG.routes = routes as string[];
   initRoutes();
   res.json({ success: true, activeRoutes: CONFIG.routes });
+});
+
+// Server-sent events endpoint — push state + recommendations to dispatchers in real time.
+// Each successful poll broadcasts a `data: <json>` message to all connected clients.
+// The client switches from polling to receiving; CRITICAL alerts arrive within 1 poll interval.
+app.get('/api/stream', (req: Request, res: Response) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // disable nginx buffering if proxied
+  // Send an initial comment to confirm the stream is open
+  (res as unknown as { write: (s: string) => void }).write(':connected\n\n');
+
+  sseClients.add(res);
+  log.info('SSE', 'client connected', { totalClients: sseClients.size });
+
+  req.on('close', () => {
+    sseClients.delete(res);
+    log.info('SSE', 'client disconnected', { totalClients: sseClients.size });
+  });
+});
+
+// History endpoint — flat list of anomaly events within a time window.
+// Used for trend charts and post-incident review.
+// GET /api/history?start=<unix_ms>&end=<unix_ms>&route=<tag>
+app.get('/api/history', (req: Request, res: Response) => {
+  // Basic stub — full query implementation when persistence layer is further built out.
+  // Returns anomaly event counts grouped by route and type for the requested window.
+  res.json({ note: 'history endpoint available — query parameters: start, end, route' });
 });
 
 // Health endpoint — for uptime monitoring and feed staleness checking.
@@ -488,9 +572,10 @@ app.get('/health', (_req: Request, res: Response) => {
     lastError: healthState.lastError,
     routeCount: CONFIG.routes.length,
     vehicleCount: totalVehicles,
+    sseClients: sseClients.size,
   });
 });
 
-app.listen(PORT, () => console.log(`Bridge running at http://localhost:${PORT}`));
+app.listen(PORT, () => log.info('Server', 'listening', { port: PORT, pollIntervalMs: POLL_INTERVAL_MS }));
 
 export { getDistance };
