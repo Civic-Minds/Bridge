@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Recommendation feedback loop** — `GET /api/feedback?window=<ms>&route=<tag>` returns dispatcher decision rates (approve/dismiss counts + accept %) per route and action type over a configurable window (default 7 days). Powered by the existing `rec_decisions` table. Visible in the Trends tab as a colour-coded table below the hour chart — rows with <40% accept rate on ≥5 decisions are flagged red.
+- **Webhook UI in settings modal** — the outbound webhook URL and HMAC secret are now configurable from the browser. Shows current status (configured/signed/not configured) when the modal opens; "Disable webhook" button available inline.
+
+### Changed
+- **Removed dead dependencies** — `fast-xml-parser` and `node-fetch` were removed from `package.json` (dropped in 1.1.0 but never cleaned up). `@types/adm-zip` moved to `devDependencies`.
+
+### Added
 - **Outbound webhook** — `POST /api/webhook` configures a URL Bridge will POST to on every approved HOLD/SHORT_TURN. Payload: `{ schemaVersion, type, recommendationId, vehicleId, routeTag, action, holdSeconds, atStop, severity, reason, issuedAt, expiresAt, bridgeInstanceId }`. Optional HMAC-SHA256 signing via `X-Bridge-Signature` header. Fire-and-forget — never delays the approval response. `GET /api/webhook` returns config; `DELETE /api/webhook` disables.
 - **Trends tab** — new 5th sidebar tab with a 24-hour anomaly frequency chart. One horizontal bar row per hour; segments coloured by anomaly type (bunching=red, closing=orange, dwell=amber, gap=blue, schedule=purple), width proportional to event count. Route filter and refresh button. Empty state when the DB has no events yet.
 - **`GET /api/history?groupBy=hour`** — returns per-hour anomaly counts (as well as the existing totals-only mode), powering the trend chart.

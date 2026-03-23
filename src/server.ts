@@ -6,7 +6,7 @@ import { log } from './logger';
 import {
   saveDecision, loadRecentDecisions,
   createInstruction, StoredInstruction,
-  queryAnomalyHistory, queryAnomalyHistoryHourly,
+  queryAnomalyHistory, queryAnomalyHistoryHourly, queryFeedback,
 } from './db';
 import { CONFIG, CONFLICT_ZONES } from './config';
 import { appState, PORT, POLL_INTERVAL_MS, BRIDGE_INSTANCE_ID, DECISION_TTL_MS } from './state';
@@ -237,6 +237,18 @@ app.get('/api/stream', (req: Request, res: Response) => {
     appState.sseClients.delete(res);
     log.info('SSE', 'client disconnected', { totalClients: appState.sseClients.size });
   });
+});
+
+// ── Feedback ───────────────────────────────────────────────────────────────
+
+// GET /api/feedback?window=<ms>&route=<tag>
+// Returns dispatcher decision rates (approve/dismiss) per route+action.
+// Default window: 7 days. Use to spot systematically over-eager thresholds.
+app.get('/api/feedback', (req: Request, res: Response) => {
+  const windowMs = parseInt(req.query.window as string, 10) || 7 * 24 * 60 * 60 * 1000;
+  const route    = typeof req.query.route === 'string' ? req.query.route : undefined;
+  const rows     = queryFeedback(windowMs, route);
+  res.json({ timestamp: Date.now(), windowMs, route: route ?? 'all', count: rows.length, feedback: rows });
 });
 
 // ── History ────────────────────────────────────────────────────────────────

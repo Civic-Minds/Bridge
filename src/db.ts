@@ -361,4 +361,65 @@ export function queryAnomalyHistoryHourly(
   }));
 }
 
+// ── Recommendation feedback ─────────────────────────────────────────────────
+
+export interface FeedbackRow {
+  routeTag: string;
+  action: string;
+  total: number;
+  approved: number;
+  dismissed: number;
+  approveRate: number; // 0–1
+}
+
+/**
+ * Aggregate dispatcher decision rates per route+action from rec_decisions.
+ * Useful for spotting systematically over-eager thresholds:
+ * e.g. RELEASE_EARLY on 501 dismissed 80% of the time → gap threshold too aggressive.
+ */
+const stmtQueryFeedback = db.prepare(`
+  SELECT
+    route_tag,
+    rec_action,
+    COUNT(*)                                              AS total,
+    SUM(CASE WHEN status = 'approved'  THEN 1 ELSE 0 END) AS approved,
+    SUM(CASE WHEN status = 'dismissed' THEN 1 ELSE 0 END) AS dismissed
+  FROM rec_decisions
+  WHERE decided_at > ?
+  GROUP BY route_tag, rec_action
+  ORDER BY route_tag, rec_action
+`);
+
+const stmtQueryFeedbackRoute = db.prepare(`
+  SELECT
+    route_tag,
+    rec_action,
+    COUNT(*)                                              AS total,
+    SUM(CASE WHEN status = 'approved'  THEN 1 ELSE 0 END) AS approved,
+    SUM(CASE WHEN status = 'dismissed' THEN 1 ELSE 0 END) AS dismissed
+  FROM rec_decisions
+  WHERE decided_at > ? AND route_tag = ?
+  GROUP BY route_tag, rec_action
+  ORDER BY rec_action
+`);
+
+export function queryFeedback(windowMs: number, routeTag?: string): FeedbackRow[] {
+  const cutoff = Date.now() - windowMs;
+  const rows = routeTag
+    ? stmtQueryFeedbackRoute.all(cutoff, routeTag)
+    : stmtQueryFeedback.all(cutoff);
+  return (rows as Array<Record<string, unknown>>).map(r => {
+    const total    = r.total    as number;
+    const approved = r.approved as number;
+    return {
+      routeTag:    r.route_tag  as string,
+      action:      r.rec_action as string,
+      total,
+      approved,
+      dismissed:   r.dismissed  as number,
+      approveRate: total > 0 ? approved / total : 0,
+    };
+  });
+}
+
 log.info('DB', 'opened', { path: DB_PATH });

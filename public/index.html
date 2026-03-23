@@ -436,6 +436,12 @@
             margin-right: 2px;
         }
         .trends-empty { color: var(--text-dim); font-size: 0.8rem; padding: 1rem 0; text-align: center; }
+        .feedback-table { width: 100%; border-collapse: collapse; font-size: 0.75rem; margin-top: 0.25rem; }
+        .feedback-table th { text-align: left; color: var(--text-dim); font-weight: 600; padding: 4px 6px; border-bottom: 1px solid var(--border); }
+        .feedback-table td { padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,0.04); }
+        .feedback-rate-bar { display: inline-block; height: 6px; border-radius: 3px; vertical-align: middle; margin-right: 4px; }
+        .feedback-warn { color: #ef4444; }
+        .feedback-ok   { color: #34d399; }
 
         .rec-actions {
             display: flex;
@@ -623,6 +629,12 @@
                     <span class="legend-dot" style="background:#60a5fa"></span>gap
                     <span class="legend-dot" style="background:#a78bfa"></span>schedule
                 </div>
+
+                <div class="section-title" style="margin-top:1.25rem;">Decision Feedback (7 days)</div>
+                <p style="font-size:0.75rem; color:var(--text-dim); margin-bottom:0.5rem;">
+                    Accept rates by route and action. Low rates may indicate thresholds that need tuning.
+                </p>
+                <div id="feedback-table"></div>
             </div>
 
         </div>
@@ -815,20 +827,55 @@
 
         window.loadTrends = async function() {
             const route = document.getElementById('trends-route-filter').value;
-            const end = Date.now();
+            const end   = Date.now();
             const start = end - 24 * 60 * 60 * 1000;
-            const params = new URLSearchParams({ start, end, groupBy: 'hour' });
-            if (route) params.set('route', route);
+            const histParams = new URLSearchParams({ start, end, groupBy: 'hour' });
+            if (route) histParams.set('route', route);
+            const fbParams = new URLSearchParams();
+            if (route) fbParams.set('route', route);
 
             try {
-                const res = await fetch(`/api/history?${params}`);
-                const data = await res.json();
-                renderTrendsChart(data.history ?? [], start, end);
+                const [histRes, fbRes] = await Promise.all([
+                    fetch(`/api/history?${histParams}`),
+                    fetch(`/api/feedback?${fbParams}`),
+                ]);
+                const histData = await histRes.json();
+                const fbData   = await fbRes.json();
+                renderTrendsChart(histData.history ?? [], start, end);
+                renderFeedback(fbData.feedback ?? []);
             } catch (e) {
                 document.getElementById('trends-chart').innerHTML =
                     '<div class="trends-empty">Failed to load trend data.</div>';
             }
         };
+
+        function renderFeedback(rows) {
+            const el = document.getElementById('feedback-table');
+            if (!rows.length) {
+                el.innerHTML = '<div class="trends-empty">No decisions recorded yet.</div>';
+                return;
+            }
+            const tableRows = rows.map(r => {
+                const pct     = Math.round(r.approveRate * 100);
+                const warn    = r.total >= 5 && pct < 40;
+                const barW    = Math.max(2, pct);
+                const barColor = pct >= 60 ? '#34d399' : pct >= 40 ? '#fbbf24' : '#ef4444';
+                return `<tr>
+                    <td>${r.routeTag}</td>
+                    <td>${r.action}</td>
+                    <td>${r.total}</td>
+                    <td>
+                        <span class="feedback-rate-bar" style="width:${barW}px;background:${barColor}"></span>
+                        <span class="${warn ? 'feedback-warn' : 'feedback-ok'}">${pct}%</span>
+                    </td>
+                    <td style="color:var(--text-dim)">${r.dismissed} dismissed</td>
+                </tr>`;
+            }).join('');
+            el.innerHTML = `<table class="feedback-table">
+                <thead><tr><th>Route</th><th>Action</th><th>Total</th><th>Accept rate</th><th></th></tr></thead>
+                <tbody>${tableRows}</tbody>
+            </table>`;
+        }
 
         function renderTrendsChart(rows, startMs, endMs) {
             const chart = document.getElementById('trends-chart');
