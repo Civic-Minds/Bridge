@@ -86,7 +86,7 @@ validation.
 
 ---
 
-- [Roadmap](./ROADMAP.md)
+- [Roadmap](./docs/roadmap/ROADMAP.md)
 - [Changelog](./CHANGELOG.md)
 - [Security](./SECURITY.md)
 
