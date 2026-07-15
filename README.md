@@ -19,7 +19,7 @@ TTC dispatchers have no unified tool to detect bunching in real time and receive
 - **Backend**: Node.js, TypeScript, Express
 - **Frontend**: Leaflet, Vanilla JS
 - **Data**: Atlas versioned live snapshots and public static artifacts backed by R2
-- **Testing**: Jest + ts-jest (41 tests)
+- **Testing**: Jest + ts-jest (42 tests)
 
 ---
 
@@ -92,3 +92,5 @@ validation.
 - [Security](./SECURITY.md)
 
 Created by Civic Minds
+
+Powered by [Atlas](https://github.com/Civic-Minds/Atlas)
