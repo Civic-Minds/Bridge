@@ -7,9 +7,6 @@
 
 import { ConflictZone } from './types';
 
-export const TTC_VEHICLE_POSITIONS_URL = 'https://bustime.ttc.ca/gtfsrt/vehicles';
-export const TTC_TRIP_UPDATES_URL      = 'https://bustime.ttc.ca/gtfsrt/trips';
-
 /**
  * Active route set — mutable at runtime via POST /api/config/active-routes.
  * Mutate in place (push/splice/assign routes) so all importers see the change.

@@ -12,9 +12,10 @@
 
 import * as path from 'path';
 import {
-  analyzeRoute, buildPredictionIndex,
+  analyzeRoute,
   generateRecommendations, generateCrossRouteRecommendations, getDistance,
 } from './analysis';
+import { fetchAtlasVehicles, fetchAtlasTripPredictions } from './atlas';
 import { Vehicle, DispatchRecommendation, VehicleWithAnalysis } from './types';
 import { loadGtfs } from './gtfs';
 import { log } from './logger';
@@ -22,11 +23,8 @@ import {
   loadRecentDecisions, seedOpenAnomalies, reconcileAnomalies,
   loadOpenInstructions, resolveInstruction, StoredInstruction,
 } from './db';
-import { CONFIG, ROUTE_META, CONFLICT_ZONES, TURNBACK_LOOPS, TurnbackLoop, TTC_VEHICLE_POSITIONS_URL, TTC_TRIP_UPDATES_URL } from './config';
+import { CONFIG, ROUTE_META, CONFLICT_ZONES, TURNBACK_LOOPS, TurnbackLoop } from './config';
 import { appState, POLL_INTERVAL_MS, DECISION_TTL_MS } from './state';
-
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const GtfsRealtimeBindings = require('gtfs-realtime-bindings');
 
 // ── Route initialisation ───────────────────────────────────────────────────
 
@@ -181,49 +179,17 @@ export function broadcastPoll(): void {
 
 export async function poll(): Promise<void> {
   try {
-    const [vehicleRes, tripRes] = await Promise.all([
-      fetch(TTC_VEHICLE_POSITIONS_URL),
-      fetch(TTC_TRIP_UPDATES_URL),
+    const routeTags = CONFIG.routes;
+    const [{ vehicles: atlasVehicles, status: vehicleStatus, ageSeconds: vehicleAge }, predictions] = await Promise.all([
+      fetchAtlasVehicles(routeTags),
+      fetchAtlasTripPredictions(),
     ]);
 
-    if (!vehicleRes.ok) throw new Error(`Vehicle feed failed: ${vehicleRes.status}`);
-    if (!tripRes.ok)    throw new Error(`Trip feed failed: ${tripRes.status}`);
+    log.info('Atlas', 'live snapshots received', { vehicleStatus, vehicleAge, vehicles: atlasVehicles.length });
 
-    const [vehicleBuf, tripBuf] = await Promise.all([
-      vehicleRes.arrayBuffer(),
-      tripRes.arrayBuffer(),
-    ]);
-
-    const RT          = (GtfsRealtimeBindings as any).transit_realtime;
-    const vehicleFeed = RT.FeedMessage.decode(new Uint8Array(vehicleBuf));
-    const tripFeed    = RT.FeedMessage.decode(new Uint8Array(tripBuf));
-    const predictions = buildPredictionIndex(tripFeed.entity);
-
-    // Bucket vehicles by route
     const byRoute: Record<string, Vehicle[]> = {};
     for (const tag of CONFIG.routes) byRoute[tag] = [];
-
-    for (const entity of vehicleFeed.entity) {
-      const v = entity.vehicle;
-      if (!v?.position) continue;
-      const routeId: string = v.trip?.routeId;
-      if (!routeId || !byRoute[routeId]) continue;
-      byRoute[routeId].push({
-        id:            v.vehicle?.id || entity.id,
-        routeTag:      routeId,
-        lat:           v.position.latitude,
-        lon:           v.position.longitude,
-        speed:         v.position.speed ?? 0,
-        heading:       v.position.bearing ?? 0,
-        dirTag:        v.trip?.directionId?.toString() ?? '',
-        isStalled:     (v.position.speed ?? 0) === 0,
-        stopSequence:  v.currentStopSequence ?? 0,
-        stopId:        v.stopId ?? '',
-        currentStatus: v.currentStatus ?? 0,
-        reportedAt:    v.timestamp?.low ?? 0,
-        tripId:        v.trip?.tripId ?? '',
-      });
-    }
+    for (const vehicle of atlasVehicles) byRoute[vehicle.routeTag]?.push(vehicle);
 
     const now = Date.now();
     let totalVehicles = 0;

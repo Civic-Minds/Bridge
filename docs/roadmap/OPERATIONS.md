@@ -18,7 +18,7 @@ evaluate.
 
 ## Deployment stages
 
-- **Development**: local TTC feeds, static GTFS, and recorded fixtures.
+- **Development**: Atlas canary snapshots, local static GTFS during migration, and recorded fixtures.
 - **Evaluation**: persistent history, replay reports, and read-only live monitoring.
 - **Test integration**: signed webhook delivery to a non-operational endpoint.
 - **Agency pilot**: human-approved instructions for a narrowly defined route set.

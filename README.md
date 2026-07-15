@@ -18,7 +18,7 @@ TTC dispatchers have no unified tool to detect bunching in real time and receive
 
 - **Backend**: Node.js, TypeScript, Express
 - **Frontend**: Leaflet, Vanilla JS
-- **Data**: TTC GTFS-RT (vehicle positions + trip updates) plus static GTFS for route geometry, stops, and spacing calibration
+- **Data**: Atlas versioned live snapshots backed by R2, plus static GTFS for route geometry, stops, and spacing calibration during the migration
 - **Testing**: Jest + ts-jest (41 tests)
 
 ---
@@ -50,13 +50,14 @@ Additional TTC streetcar routes (505, 506, 509, 511, 512) can be enabled via `PO
 
 ## Data source
 
-TTC GTFS-Realtime feeds:
+Bridge consumes the canary live-data contract from Atlas:
 
-- Vehicle positions: `https://bustime.ttc.ca/gtfsrt/vehicles`
-- Trip updates: `https://bustime.ttc.ca/gtfsrt/trips`
+- Vehicle positions: `/api/live-snapshot?agency=ttc&feed=vehicles`
+- Trip updates: `/api/live-snapshot?agency=ttc&feed=trips`
 
-Static GTFS is downloaded from Toronto Open Data on startup when it is missing or
-stale. It supplies route paths, stops, and per-route stop-spacing estimates.
+Atlas owns the upstream GTFS-Realtime feeds and R2 archive. Bridge currently still
+downloads static GTFS locally for route paths, stops, and spacing calibration; that
+is the next Atlas-consumer migration step.
 
 No API key required.
 
@@ -78,7 +79,7 @@ docker run -p 3000:3000 bridge
 
 ## Status
 
-In development. Live TTC polling, static GTFS route geometry, stop markers, anomaly
+In development. Atlas-backed live snapshots, static GTFS route geometry, stop markers, anomaly
 detection, recommendation approval, SQLite history, SSE updates, and webhook
 delivery are implemented. The next milestone is replay-based validation and a
 read-only operational pilot; operator-system integration remains gated behind that

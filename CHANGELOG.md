@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+- Bridge now consumes Atlas’s versioned R2-backed canary live snapshots instead of polling TTC GTFS-RT directly; dispatch analysis remains Bridge-owned.
+
 ## [1.6.0] - 2026-03-22
 
 ### Added
