@@ -15,7 +15,7 @@ import {
   generateRecommendations, generateCrossRouteRecommendations, getDistance,
 } from './analysis';
 import { fetchAtlasVehicles, fetchAtlasTripPredictions } from './atlas';
-import { Vehicle, DispatchRecommendation, VehicleWithAnalysis } from './types';
+import { Vehicle, DispatchRecommendation, VehicleWithAnalysis, PredictionIndex } from './types';
 import { loadAtlasStatic } from './atlasStatic';
 import { log } from './logger';
 import {
@@ -179,10 +179,15 @@ export function broadcastPoll(): void {
 export async function poll(): Promise<void> {
   try {
     const routeTags = CONFIG.routes;
-    const [{ vehicles: atlasVehicles, status: vehicleStatus, ageSeconds: vehicleAge }, predictions] = await Promise.all([
-      fetchAtlasVehicles(routeTags),
-      fetchAtlasTripPredictions(),
-    ]);
+    const { vehicles: atlasVehicles, status: vehicleStatus, ageSeconds: vehicleAge } = await fetchAtlasVehicles(routeTags);
+    let predictions: PredictionIndex = new Map();
+    try {
+      predictions = await fetchAtlasTripPredictions();
+    } catch (err) {
+      // Trip-level delay is useful context but is not required to detect vehicle bunching.
+      // Keep the vehicle canary usable while exposing the degraded dependency in logs.
+      log.warn('Atlas', 'trip snapshot unavailable; continuing without predictions', { err: (err as Error).message });
+    }
 
     log.info('Atlas', 'live snapshots received', { vehicleStatus, vehicleAge, vehicles: atlasVehicles.length });
 
