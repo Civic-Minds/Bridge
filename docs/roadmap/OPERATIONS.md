@@ -5,8 +5,8 @@ evaluate.
 
 ## Readiness gates
 
-1. **Pipeline verified**: live and replayed GTFS-Realtime feeds decode correctly,
-   remain fresh, and fail visibly when unavailable.
+1. **Provider verified**: Atlas live and replay contracts decode correctly, remain
+   fresh, and fail visibly when unavailable for the unchanged canary cohort.
 2. **Recommendations evaluated**: alert frequency, persistence, and likely false
    positives are measured by route, direction, and time period.
 3. **Read-only pilot**: Bridge monitors a defined TTC route set without sending
@@ -18,7 +18,7 @@ evaluate.
 
 ## Deployment stages
 
-- **Development**: Atlas canary snapshots, local static GTFS during migration, and recorded fixtures.
+- **Development**: Atlas canary snapshots and public static artifacts, plus recorded fixtures.
 - **Evaluation**: persistent history, replay reports, and read-only live monitoring.
 - **Test integration**: signed webhook delivery to a non-operational endpoint.
 - **Agency pilot**: human-approved instructions for a narrowly defined route set.

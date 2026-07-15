@@ -51,16 +51,15 @@ intervention sizing. Better calibration improves recommendation accuracy.
 
 ---
 
-## Theme 3 — Static GTFS Integration
+## Theme 3 — Atlas Static-Data Integration
 
-Route paths and stop coordinates are currently unpopulated (`stops: []`, `paths: []`).
-This limits map quality and makes geographic algorithms approximate.
+Atlas supplies route paths and ordered stops as public versioned artifacts. Bridge
+consumes that provider data and keeps only the dispatch-specific projection it needs.
 
-- [x] **Static GTFS loader** (`src/gtfs.ts`) — parses `shapes.txt`, `stops.txt`, `trips.txt`,
-  and `stop_times.txt` at server startup, filtered to monitored routes.
-- [x] **Route polylines on map** — actual TTC shape geometry from `shapes.txt`.
-- [x] **Stop markers** — circle markers with hover tooltips from ordered GTFS stop sequence.
-- [x] **Per-route stop spacing** — haversine-averaged consecutive stop distances per route.
+- [x] **Atlas static-artifact adapter** (`src/atlasStatic.ts`) — loads public route geometry and stop ordering from Atlas R2.
+- [x] **Route polylines on map** — actual TTC shape geometry from Atlas artifacts.
+- [x] **Stop markers** — circle markers with hover tooltips from Atlas's ordered stop sequence.
+- [x] **Per-route stop spacing** — haversine-averaged consecutive stop distances from Atlas artifacts.
 - [ ] **Shared stop detection for corridor pairs** — identify which stops are shared between
   a local and express route vs. local-only. Makes CONVERT_TO_LOCAL recommendations precise:
   "vehicle will serve stops X, Y, Z which the express skips."

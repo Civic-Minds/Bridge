@@ -8,7 +8,7 @@ TTC dispatchers have no unified tool to detect bunching in real time and receive
 
 ## Features
 
-- **Live Bunching Detection**: Polls TTC GTFS-RT every 10 seconds, detects bunching, closing pairs, large gaps, and dwell anomalies across all active streetcar routes.
+- **Live Bunching Detection**: Consumes Atlas live snapshots every 10 seconds, detecting bunching, closing pairs, large gaps, and dwell anomalies across active streetcar routes.
 - **Dispatch Action Engine**: Generates specific instructions — HOLD, RELEASE_EARLY, SHORT_TURN, CONVERT_TO_EXPRESS, CONVERT_TO_LOCAL — with calculated hold times, projected headways, and plain-language reasoning.
 - **Route Ladder View**: SKATE-style linear dispatcher view with vehicles positioned by stop sequence and colour-coded by anomaly state.
 - **Policy Layer**: Agency-configurable constraint system — disable action types, set severity thresholds, and document operating constraints per route.
