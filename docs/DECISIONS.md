@@ -22,13 +22,17 @@ Bridge recommends actions; it does not autonomously instruct operators. Every
 operator-facing instruction requires an identified dispatcher or supervisor to
 approve it. Automated delivery may follow approval, but it may not bypass it.
 
-## 2026-07-15 — Atlas supplies shared context; Bridge owns live operations
+## 2026-07-15 — Atlas supplies shared context; Bridge owns dispatch operations
 
-Bridge owns live polling, anomaly state, recommendations, approvals, instruction
-delivery, and outcome tracking. Atlas is the preferred source for processed static
-geometry, stop structure, corridors, historical positions, and baseline context.
-Bridge should not duplicate Atlas’s data-processing responsibilities without a
-clear operational need.
+Atlas is the platform for reusable transit-data capabilities: feed configuration,
+GTFS/GTFS-RT normalization, static geometry, stop structure, live snapshots,
+historical positions, replay access, and baseline context. Bridge consumes those
+contracts.
+
+Bridge owns dispatch-specific operations: bunching/gap analysis, recommendations,
+approvals, instruction delivery, and outcome tracking. If Bridge needs a new data
+primitive, it should be proposed for Atlas when it benefits multiple tools; a
+dispatch-specific projection belongs in Bridge.
 
 ## 2026-07-15 — Replay validation precedes agency integration
 
