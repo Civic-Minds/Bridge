@@ -7,8 +7,9 @@ by impact vs. effort. This is a living document — priorities shift, but themes
 
 ## Theme 1 — Dispatcher Workflow (closing the loop)
 
-The current system detects problems and surfaces recommendations. The full loop is:
-**detect → recommend → approve → instruct → confirm**. Bridge currently stops at recommend.
+The full loop is **detect → recommend → approve → instruct → confirm**. The current
+prototype implements the live detection and most of the approval/instruction loop;
+validation, authentication, and complete auditability remain.
 
 - [x] **Recommendation approval/dismiss UI** — Accept/Dismiss buttons on each pending card.
   Dismissed recs hidden; approved recs dimmed. 5-minute TTL before re-surfacing.
@@ -20,9 +21,9 @@ The current system detects problems and surfaces recommendations. The full loop 
 - [x] **Instruction outcome tracking** — after issuing a HOLD, did the vehicle actually stop?
   After a SHORT_TURN, did the vehicle reverse? Close the loop by watching the vehicle's
   next position reports and flagging if the instruction wasn't followed.
-- [ ] **Recommendation feedback loop** — log accepted/dismissed/expired status for every
-  recommendation. Use this to tune algorithm parameters (e.g. if RELEASE_EARLY is
-  dismissed 80% of the time on route 54, the gap threshold may be too aggressive).
+- [x] **Recommendation feedback loop** — accepted/dismissed decisions are persisted
+  and aggregated by route and action through `GET /api/feedback`. Expired and
+  instruction outcomes still need to be included in the same tuning surface.
 - [ ] **Supervisor audit log** — timestamped record of every recommendation generated,
   every decision made, and outcome. For post-incident review and policy documentation.
 
@@ -87,7 +88,8 @@ Currently TTC-only. The analysis pipeline is agency-agnostic; the binding is in 
 
 ## Theme 5 — Data Persistence and Analytics
 
-All state is in-memory. No history survives a restart.
+Live vehicle state remains in-memory, while decisions, anomaly events, and
+instructions survive restarts through SQLite.
 
 - [x] **SQLite persistence** (`src/db.ts`) — `rec_decisions`, `anomaly_events`, and `instructions`
   tables. No external dependency (uses built-in `node:sqlite`).
@@ -129,3 +131,22 @@ decisions depend on context Bridge doesn't have yet.
   meta). All console.* replaced throughout server, analysis, and scripts.
 - [ ] **Multi-instance state** — current in-memory state prevents horizontal scaling.
   Add Redis adapter so multiple Bridge instances share state behind a load balancer.
+
+---
+
+## Theme 8 — Validation and Pilot Readiness
+
+The next milestone is confidence in the existing live pipeline, not more action
+types. Every algorithm change should be measurable against recorded GTFS-Realtime
+data before it is used in an agency workflow.
+
+- [ ] **GTFS-Realtime replay harness** — record or load vehicle/trip feeds and run
+  the real parser, poller, analysis, and recommendation pipeline deterministically.
+- [ ] **Feed contract and freshness checks** — validate protobuf decoding, required
+  fields, timestamps, route coverage, stale data, timeouts, and retry behavior.
+- [ ] **Recommendation evaluation report** — measure alert frequency, persistence,
+  false-positive candidates, and outcome rates by route, direction, and time period.
+- [ ] **Read-only pilot deployment** — run live monitoring for a defined TTC route
+  set with no operator-system delivery and review recommendations against service.
+- [ ] **Operational authentication and audit** — identify approvers and persist a
+  complete recommendation, decision, delivery, and outcome trail.

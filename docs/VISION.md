@@ -88,9 +88,18 @@ communication channel the agency already uses to reach operators.
 
 ---
 
-## Where Bridge Is Going
+## Current State and Next Milestone
 
-The immediate goal is to close the loop between detection and instruction:
+Bridge now polls TTC GTFS-Realtime vehicle positions and trip updates, combines
+them with static GTFS geometry, detects anomalies, generates recommendations, and
+supports dispatcher approval, webhook delivery, and basic instruction outcome
+tracking. The system is still a prototype: the feed and recommendation paths need
+recorded-data validation, and the operational audit/authentication layer is not yet
+complete.
+
+The next milestone is a read-only operational pilot that closes the loop between
+live detection and measured outcomes without connecting directly to an agency
+operator system:
 
 1. Dispatcher sees a recommendation in Bridge
 2. Dispatcher approves it with one tap
@@ -98,6 +107,9 @@ The immediate goal is to close the loop between detection and instruction:
 4. Instruction posts to the agency's existing system (MDT, driver app, radio queue)
 5. Operator receives a clear, specific message: *"Hold at next stop. Wait for release."*
 6. Bridge tracks whether the vehicle moved, confirms or escalates
+
+Recorded GTFS-Realtime replay is required before this workflow is treated as
+operationally trustworthy. See [Product Decisions](DECISIONS.md).
 
 Beyond that, the vision is a system that gets better over time. Every recommendation
 that was accepted or dismissed, every intervention that worked or didn't — that's

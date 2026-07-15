@@ -18,7 +18,7 @@ TTC dispatchers have no unified tool to detect bunching in real time and receive
 
 - **Backend**: Node.js, TypeScript, Express
 - **Frontend**: Leaflet, Vanilla JS
-- **Data**: TTC GTFS-RT (vehicle positions + trip updates)
+- **Data**: TTC GTFS-RT (vehicle positions + trip updates) plus static GTFS for route geometry, stops, and spacing calibration
 - **Testing**: Jest + ts-jest (41 tests)
 
 ---
@@ -50,7 +50,13 @@ Additional TTC streetcar routes (505, 506, 509, 511, 512) can be enabled via `PO
 
 ## Data source
 
-TTC GTFS-Realtime vehicle positions: `https://bustime.ttc.ca/gtfsrt/vehicles`
+TTC GTFS-Realtime feeds:
+
+- Vehicle positions: `https://bustime.ttc.ca/gtfsrt/vehicles`
+- Trip updates: `https://bustime.ttc.ca/gtfsrt/trips`
+
+Static GTFS is downloaded from Toronto Open Data on startup when it is missing or
+stale. It supplies route paths, stops, and per-route stop-spacing estimates.
 
 No API key required.
 
@@ -72,7 +78,11 @@ docker run -p 3000:3000 bridge
 
 ## Status
 
-In development. Route geometry (path rendering on the map) will be populated from static GTFS in a future pass. Vehicle markers are positioned live; route lines are not yet drawn.
+In development. Live TTC polling, static GTFS route geometry, stop markers, anomaly
+detection, recommendation approval, SQLite history, SSE updates, and webhook
+delivery are implemented. The next milestone is replay-based validation and a
+read-only operational pilot; operator-system integration remains gated behind that
+validation.
 
 ---
 
