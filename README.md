@@ -18,7 +18,7 @@ TTC dispatchers have no unified tool to detect bunching in real time and receive
 
 - **Backend**: Node.js, TypeScript, Express
 - **Frontend**: Leaflet, Vanilla JS
-- **Data**: Atlas versioned live snapshots backed by R2, plus static GTFS for route geometry, stops, and spacing calibration during the migration
+- **Data**: Atlas versioned live snapshots and public static artifacts backed by R2
 - **Testing**: Jest + ts-jest (41 tests)
 
 ---
@@ -55,9 +55,9 @@ Bridge consumes the canary live-data contract from Atlas:
 - Vehicle positions: `/api/live-snapshot?agency=ttc&feed=vehicles`
 - Trip updates: `/api/live-snapshot?agency=ttc&feed=trips`
 
-Atlas owns the upstream GTFS-Realtime feeds and R2 archive. Bridge currently still
-downloads static GTFS locally for route paths, stops, and spacing calibration; that
-is the next Atlas-consumer migration step.
+Atlas owns upstream GTFS processing, GTFS-Realtime feeds, and the R2 archive. Bridge
+consumes Atlas's public route and stop artifacts for geometry, stop ordering, and
+spacing calibration; dispatch analysis and policy remain Bridge-owned.
 
 No API key required.
 
@@ -79,7 +79,7 @@ docker run -p 3000:3000 bridge
 
 ## Status
 
-In development. Atlas-backed live snapshots, static GTFS route geometry, stop markers, anomaly
+In development. Atlas-backed live snapshots and static route artifacts, stop markers, anomaly
 detection, recommendation approval, SQLite history, SSE updates, and webhook
 delivery are implemented. The next milestone is replay-based validation and a
 read-only operational pilot; operator-system integration remains gated behind that

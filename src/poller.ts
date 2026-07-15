@@ -1,23 +1,22 @@
 /**
  * Bridge polling engine.
  *
- * Owns the GTFS-RT fetch loop, per-route analysis, recommendation generation,
+ * Owns the Atlas snapshot polling loop, per-route analysis, recommendation generation,
  * instruction compliance tracking, SSE broadcasting, and server boot sequence.
  *
  * Exports:
- *   boot()          — call once at startup; loads GTFS, restores DB state, starts poll loop
+ *   boot()          — call once at startup; loads Atlas artifacts, restores DB state, starts poll loop
  *   initRoutes()    — (re-)initialise in-memory route state from CONFIG
  *   applyDecisions  — overlay dispatcher decisions + instruction outcomes onto a rec list
  */
 
-import * as path from 'path';
 import {
   analyzeRoute,
   generateRecommendations, generateCrossRouteRecommendations, getDistance,
 } from './analysis';
 import { fetchAtlasVehicles, fetchAtlasTripPredictions } from './atlas';
 import { Vehicle, DispatchRecommendation, VehicleWithAnalysis } from './types';
-import { loadGtfs } from './gtfs';
+import { loadAtlasStatic } from './atlasStatic';
 import { log } from './logger';
 import {
   loadRecentDecisions, seedOpenAnomalies, reconcileAnomalies,
@@ -262,9 +261,8 @@ export async function poll(): Promise<void> {
 // ── Boot sequence ──────────────────────────────────────────────────────────
 
 export async function boot(): Promise<void> {
-  const gtfsDir = path.join(__dirname, '..', 'data', 'gtfs');
   try {
-    appState.gtfsData = await loadGtfs(gtfsDir, Object.keys(ROUTE_META));
+    appState.gtfsData = await loadAtlasStatic(Object.keys(ROUTE_META));
     for (const [tag, data] of appState.gtfsData) {
       const stops = data.stops;
       if (stops.length < 2) continue;
@@ -274,11 +272,11 @@ export async function boot(): Promise<void> {
       }
       appState.routeSpacing.set(tag, total / (stops.length - 1));
     }
-    log.info('GTFS', 'stop spacing computed', {
+    log.info('Atlas', 'stop spacing computed', {
       spacingM: Object.fromEntries([...appState.routeSpacing.entries()].map(([k, v]) => [k, Math.round(v)])),
     });
   } catch (err) {
-    log.warn('GTFS', 'failed to load static data — routes will have no paths or stops', {
+    log.warn('Atlas', 'failed to load static artifacts — routes will have no paths or stops', {
       err: (err as Error).message,
     });
   }

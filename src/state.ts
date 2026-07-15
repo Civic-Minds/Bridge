@@ -12,7 +12,7 @@
 import * as crypto from 'crypto';
 import { Response }  from 'express';
 import { RouteState, DispatchRecommendation, VehicleHistory, DispatchPolicy, DEFAULT_POLICY } from './types';
-import { GtfsRouteData } from './gtfs';
+import { GtfsRouteData } from './atlasStatic';
 import { StoredInstruction } from './db';
 
 // ── Constants ──────────────────────────────────────────────────────────────

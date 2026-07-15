@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- **Atlas static-artifact migration**: Bridge now loads TTC route geometry and stops from Atlas R2, removing its direct static-GTFS download and keeping upstream transit data ownership in Atlas.
+
 - Bridge now consumes Atlas’s versioned R2-backed canary live snapshots instead of polling TTC GTFS-RT directly; dispatch analysis remains Bridge-owned.
 
 ## [1.6.0] - 2026-03-22

@@ -4,8 +4,8 @@
   "description": "",
   "main": "src/server.ts",
   "scripts": {
-    "start": "ts-node scripts/fetch-gtfs.ts && node dist/server.js",
-    "dev": "ts-node scripts/fetch-gtfs.ts && ts-node src/server.ts",
+    "start": "node dist/server.js",
+    "dev": "ts-node src/server.ts",
     "build": "tsc",
     "test": "jest"
   },
@@ -14,13 +14,10 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "adm-zip": "^0.5.16",
     "cors": "^2.8.6",
-    "express": "^5.2.1",
-    "gtfs-realtime-bindings": "^1.1.1"
+    "express": "^5.2.1"
   },
   "devDependencies": {
-    "@types/adm-zip": "^0.5.8",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/jest": "^30.0.0",
