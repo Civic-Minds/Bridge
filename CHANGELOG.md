@@ -2,6 +2,8 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.6.2] - 2026-07-16
+
 ## [1.6.1] - 2026-07-15
 
 - **Atlas static-artifact migration**: Bridge now loads TTC route geometry and stops from Atlas R2, removing its direct static-GTFS download and keeping upstream transit data ownership in Atlas.
